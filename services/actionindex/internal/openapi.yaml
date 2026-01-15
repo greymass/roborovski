@@ -1,0 +1,986 @@
+openapi: 3.1.0
+info:
+  title: Roborovski actionindex API
+  description: Account action history index service for querying actions by account
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:9600
+    description: Default local server
+
+tags:
+  - name: Account History
+    description: Account activity and action history
+  - name: Legacy Account History
+    description: v1 API endpoints for account history
+  - name: Debug
+    description: Internal state inspection (requires --debug-endpoints)
+
+paths:
+  /v1/history/get_actions:
+    get:
+      operationId: getActionsQuery
+      summary: Get actions
+      description: Retrieve action history for an account. Supports pagination via pos/offset and filtering by contract and action name.
+      tags:
+        - Legacy Account History
+      parameters:
+        - name: account_name
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Account name to get actions for
+        - name: pos
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: -1
+          description: Starting position (-1 = end)
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: -20
+          description: Count and direction (negative = descending)
+        - name: contract
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter by contract
+        - name: action
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter by action (requires contract)
+        - name: decode
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: true
+          description: Decode action data using ABI
+      responses:
+        "200":
+          description: Actions found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GetActionsResponse"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: Service unavailable (syncing)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    post:
+      operationId: getActionsPost
+      summary: Get actions (POST)
+      description: Retrieve action history using POST. Identical to GET but accepts parameters in request body.
+      tags:
+        - Legacy Account History
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - account_name
+              properties:
+                account_name:
+                  type: string
+                  description: Account name
+                pos:
+                  type: integer
+                  default: -1
+                  description: Starting position (-1 = end)
+                offset:
+                  type: integer
+                  default: -20
+                  description: Count and direction (negative = descending)
+                contract:
+                  type: string
+                  description: Filter by contract
+                action:
+                  type: string
+                  description: Filter by action (requires contract)
+                decode:
+                  type: boolean
+                  default: true
+                  description: Decode action data using ABI
+      responses:
+        "200":
+          description: Actions found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GetActionsResponse"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: Service unavailable (syncing)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /account/{account}/activity:
+    get:
+      operationId: getAccountActivity
+      summary: Get account activity
+      description: Retrieve account activity with cursor-based pagination. Supports filtering by contract, action, and date range.
+      tags:
+        - Account History
+      parameters:
+        - name: account
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Account name
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+          description: Max results (1-100)
+        - name: order
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: ["asc", "desc"]
+            default: "desc"
+          description: Sort order
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Pagination cursor
+        - name: contract
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter by contract
+        - name: action
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter by action (requires contract)
+        - name: date
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+          description: Single date filter (YYYY-MM-DD)
+        - name: start_date
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+          description: Date range start (YYYY-MM-DD)
+        - name: end_date
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+          description: Date range end (YYYY-MM-DD)
+        - name: decode
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: true
+          description: Decode action data using ABI
+        - name: trace
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+          description: Include query timing trace
+      responses:
+        "200":
+          description: Activity found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountActivityResponse"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountActivityErrorResponse"
+        "503":
+          description: Service unavailable (syncing)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountActivityErrorResponse"
+
+  /account/{account}/stats:
+    get:
+      operationId: getAccountStats
+      summary: Get account statistics
+      description: Returns lightweight statistics for an account including total action count and date range. This endpoint is optimized for fast lookups without scanning action data.
+      tags:
+        - Account History
+      parameters:
+        - name: account
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Account name
+      responses:
+        "200":
+          description: Stats returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountStatsResponse"
+        "400":
+          description: Invalid account name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountStatsErrorResponse"
+        "503":
+          description: Service unavailable (syncing)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountStatsErrorResponse"
+
+  /debug/account:
+    get:
+      operationId: debugAccount
+      summary: Account index metadata
+      description: Get internal index metadata for an account including chunk count and sequence range.
+      tags:
+        - Debug
+      parameters:
+        - name: account
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Account name
+        - name: bases
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+          description: Include all chunk base sequences
+      responses:
+        "200":
+          description: Account index metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DebugAccountResponse"
+
+  /debug/chunk:
+    get:
+      operationId: debugChunk
+      summary: Find chunk by sequence
+      description: Find which chunk contains a specific global sequence number for an account.
+      tags:
+        - Debug
+      parameters:
+        - name: account
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Account name
+        - name: seq
+          in: query
+          required: true
+          schema:
+            type: integer
+            format: uint64
+          description: Global sequence number
+      responses:
+        "200":
+          description: Chunk information
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DebugChunkResponse"
+
+  /debug/read-chunk:
+    get:
+      operationId: debugReadChunk
+      summary: Read chunk data
+      description: Read raw sequence data from a specific chunk for an account.
+      tags:
+        - Debug
+      parameters:
+        - name: account
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Account name
+        - name: chunk
+          in: query
+          required: true
+          schema:
+            type: integer
+          description: Chunk ID number
+      responses:
+        "200":
+          description: Raw chunk data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DebugReadChunkResponse"
+
+  /debug/compare:
+    get:
+      operationId: debugCompare
+      summary: Compare index stats
+      description: Compare index statistics between implementations for an account.
+      tags:
+        - Debug
+      parameters:
+        - name: account
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Account name
+      responses:
+        "200":
+          description: Comparison stats
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /debug/scan-contract-action:
+    get:
+      operationId: debugScanContractAction
+      summary: Scan contract::action index
+      description: Scan the contract::action filter index for an account to debug filter behavior.
+      tags:
+        - Debug
+      parameters:
+        - name: account
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Account name
+        - name: contract
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Contract name
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Action name
+      responses:
+        "200":
+          description: Contract::action scan results
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /debug/timemap:
+    get:
+      operationId: debugTimemap
+      summary: Time map info
+      description: Get the sequence-to-time mapping table range used for date filtering.
+      tags:
+        - Debug
+      responses:
+        "200":
+          description: Time map range info
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DebugTimemapResponse"
+
+  /debug/seq:
+    get:
+      operationId: debugSeq
+      summary: Check sequence in hour
+      description: Check if a global sequence falls within a specific hour's sequence range.
+      tags:
+        - Debug
+      parameters:
+        - name: seq
+          in: query
+          required: true
+          schema:
+            type: integer
+            format: uint64
+          description: Global sequence number
+        - name: hour
+          in: query
+          required: true
+          schema:
+            type: integer
+          description: Hour number (from /debug/timemap)
+      responses:
+        "200":
+          description: Sequence range check result
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /debug/seq-to-date:
+    get:
+      operationId: debugSeqToDate
+      summary: Sequence to date
+      description: Convert a global sequence number to its approximate date using the time map.
+      tags:
+        - Debug
+      parameters:
+        - name: seq
+          in: query
+          required: true
+          schema:
+            type: integer
+            format: uint64
+          description: Global sequence number
+      responses:
+        "200":
+          description: Sequence to date mapping
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /debug/wal:
+    get:
+      operationId: debugWal
+      summary: WAL status
+      description: Get write-ahead log status including entry count, sequence range, and bulk mode state.
+      tags:
+        - Debug
+      responses:
+        "200":
+          description: WAL status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DebugWalResponse"
+
+  /debug/slice:
+    get:
+      operationId: debugSlice
+      summary: Slice metadata
+      description: Get metadata about storage slices. Optionally compare two slices or get detailed stats for one.
+      tags:
+        - Debug
+      parameters:
+        - name: slice
+          in: query
+          required: false
+          schema:
+            type: integer
+          description: Slice number for detailed stats
+        - name: compare
+          in: query
+          required: false
+          schema:
+            type: integer
+          description: Second slice number for comparison
+      responses:
+        "200":
+          description: Slice information
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /debug/block:
+    get:
+      operationId: debugBlock
+      summary: Read block data
+      description: Read raw block data including action count, notifications, and sequence range.
+      tags:
+        - Debug
+      parameters:
+        - name: block
+          in: query
+          required: true
+          schema:
+            type: integer
+            format: uint32
+          description: Block number
+      responses:
+        "200":
+          description: Raw block data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DebugBlockResponse"
+
+  /debug/action:
+    get:
+      operationId: debugAction
+      summary: Look up action
+      description: Look up a specific action by global sequence number with timing information.
+      tags:
+        - Debug
+      parameters:
+        - name: seq
+          in: query
+          required: true
+          schema:
+            type: integer
+            format: uint64
+          description: Global sequence number
+      responses:
+        "200":
+          description: Action details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DebugActionResponse"
+
+  /debug/search-account-in-block:
+    get:
+      operationId: debugSearchAccountInBlock
+      summary: Search account in block
+      description: Search for all actions involving a specific account within a block.
+      tags:
+        - Debug
+      parameters:
+        - name: block
+          in: query
+          required: true
+          schema:
+            type: integer
+            format: uint32
+          description: Block number
+        - name: account
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Account name to search for
+      responses:
+        "200":
+          description: Matching actions
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /debug/filter-block:
+    get:
+      operationId: debugFilterBlock
+      summary: Filter block
+      description: Apply the account filtering logic to a block and return filtered data.
+      tags:
+        - Debug
+      parameters:
+        - name: block
+          in: query
+          required: true
+          schema:
+            type: integer
+            format: uint32
+          description: Block number
+      responses:
+        "200":
+          description: Filtered block data
+          content:
+            application/json:
+              schema:
+                type: object
+
+components:
+  schemas:
+    GetActionsResponse:
+      type: object
+      required:
+        - actions
+        - head_block_num
+        - last_irreversible_block
+      properties:
+        actions:
+          type: array
+          items:
+            $ref: "#/components/schemas/ActionResult"
+        head_block_num:
+          type: integer
+          format: uint32
+        last_irreversible_block:
+          type: integer
+          format: uint32
+
+    AccountActivityResponse:
+      type: object
+      required:
+        - results
+      properties:
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/ActivityActionResult"
+        next_cursor:
+          type: string
+          description: Cursor for next page
+        prev_cursor:
+          type: string
+          description: Cursor for previous page
+        trace:
+          type: object
+          description: Query trace information (if requested)
+
+    AccountStatsResponse:
+      type: object
+      required:
+        - account
+        - total_actions
+      properties:
+        account:
+          type: string
+          description: Account name
+        total_actions:
+          type: integer
+          description: Total number of actions for this account
+        first_action_seq:
+          type: integer
+          format: uint64
+          description: Global sequence of the first action
+        last_action_seq:
+          type: integer
+          format: uint64
+          description: Global sequence of the most recent action
+        first_action_date:
+          type: string
+          format: date-time
+          description: Approximate timestamp of the first action
+        last_action_date:
+          type: string
+          format: date-time
+          description: Approximate timestamp of the most recent action
+
+    AccountStatsErrorResponse:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+
+    ActionResult:
+      type: object
+      description: Action result for legacy get_actions endpoint
+      properties:
+        global_action_seq:
+          type: integer
+          format: uint64
+        account_action_seq:
+          type: integer
+          format: uint64
+          description: Sequential position in account history (0 until implemented)
+        block_num:
+          type: integer
+          format: uint32
+        block_time:
+          type: string
+        action_trace:
+          $ref: "#/components/schemas/ActionTrace"
+        irreversible:
+          type: boolean
+
+    ActivityActionResult:
+      type: object
+      description: Action result for activity endpoint (no account_action_seq)
+      properties:
+        global_action_seq:
+          type: integer
+          format: uint64
+        block_num:
+          type: integer
+          format: uint32
+        block_time:
+          type: string
+        action_trace:
+          $ref: "#/components/schemas/ActionTrace"
+        irreversible:
+          type: boolean
+
+    ActionTrace:
+      type: object
+      properties:
+        action_ordinal:
+          type: integer
+        creator_action_ordinal:
+          type: integer
+        closest_unnotified_ancestor_action_ordinal:
+          type: integer
+        receipt:
+          type: object
+        receiver:
+          type: string
+        act:
+          type: object
+          properties:
+            account:
+              type: string
+            name:
+              type: string
+            authorization:
+              type: array
+              items:
+                type: object
+                properties:
+                  actor:
+                    type: string
+                  permission:
+                    type: string
+            data:
+              oneOf:
+                - type: object
+                - type: string
+            hex_data:
+              type: string
+        context_free:
+          type: boolean
+        elapsed:
+          type: integer
+        trx_id:
+          type: string
+        block_num:
+          type: integer
+        block_time:
+          type: string
+        producer_block_id:
+          type: string
+        account_ram_deltas:
+          type: array
+          items:
+            type: object
+
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: string
+
+    AccountActivityErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          required:
+            - code
+            - message
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+
+    DebugAccountResponse:
+      type: object
+      properties:
+        account:
+          type: string
+        account_id:
+          type: integer
+          format: uint64
+        all_actions_chunks:
+          type: integer
+        first_base:
+          type: integer
+          format: uint64
+        last_base:
+          type: integer
+          format: uint64
+        chunk_bases:
+          type: array
+          items:
+            type: integer
+            format: uint64
+
+    DebugChunkResponse:
+      type: object
+      properties:
+        account:
+          type: string
+        account_id:
+          type: integer
+          format: uint64
+        target_seq:
+          type: integer
+          format: uint64
+        chunk_id:
+          type: integer
+        prev_base:
+          type: integer
+          format: uint64
+        next_base:
+          type: integer
+          format: uint64
+        gap_size:
+          type: integer
+
+    DebugReadChunkResponse:
+      type: object
+      properties:
+        account:
+          type: string
+        chunk_id:
+          type: integer
+        base_seq:
+          type: integer
+          format: uint64
+        seq_count:
+          type: integer
+        first_seq:
+          type: integer
+          format: uint64
+        last_seq:
+          type: integer
+          format: uint64
+        first_seqs:
+          type: array
+          items:
+            type: integer
+            format: uint64
+        last_seqs:
+          type: array
+          items:
+            type: integer
+            format: uint64
+
+    DebugTimemapResponse:
+      type: object
+      properties:
+        total_entries:
+          type: integer
+        min_hour:
+          type: integer
+        max_hour:
+          type: integer
+        min_hour_date:
+          type: string
+          format: date-time
+        max_hour_date:
+          type: string
+          format: date-time
+
+    DebugWalResponse:
+      type: object
+      properties:
+        wal_entries:
+          type: integer
+        min_seq:
+          type: integer
+          format: uint64
+        max_seq:
+          type: integer
+          format: uint64
+        min_date:
+          type: string
+          format: date-time
+        max_date:
+          type: string
+          format: date-time
+        bulk_mode:
+          type: boolean
+
+    DebugBlockResponse:
+      type: object
+      properties:
+        block_num:
+          type: integer
+          format: uint32
+        block_time:
+          type: integer
+        action_count:
+          type: integer
+        notification_count:
+          type: integer
+        notified_accounts:
+          type: array
+          items:
+            type: string
+        min_seq:
+          type: integer
+          format: uint64
+        max_seq:
+          type: integer
+          format: uint64
+        actions:
+          type: array
+          items:
+            type: object
+
+    DebugActionResponse:
+      type: object
+      properties:
+        seq:
+          type: integer
+          format: uint64
+        block_num:
+          type: integer
+          format: uint32
+        block_time:
+          type: string
+        contract:
+          type: string
+        action:
+          type: string
+        receiver:
+          type: string
+        trx_id:
+          type: string
+        ordinal:
+          type: integer
+        auth:
+          type: array
+          items:
+            type: object
+        data_hex:
+          type: string
+        timing_ms:
+          type: number

@@ -1,0 +1,32 @@
+# Binaries (keep directory structure)
+/bin/*
+!/bin/.gitkeep
+*.exe
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Go
+*.test
+*.out
+go.work.sum
+
+# Local config
+*.local.json
+*.local.yaml
+.env
+
+# Build artifacts
+dist/
+build/
+
+# Debug
+debug
+__debug_bin

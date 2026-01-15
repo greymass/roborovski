@@ -1,0 +1,484 @@
+openapi: 3.1.0
+info:
+  title: Roborovski coreindex API
+  description: Block and action data service. Provides JSON and binary streaming endpoints.
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:9400
+    description: Default HTTP API endpoint
+
+tags:
+  - name: Legacy Blocks
+    description: v1 API endpoints for block and action data
+
+paths:
+  /v1/history/get_info:
+    get:
+      operationId: getInfo
+      summary: Get info
+      description: Returns the current LIB, HEAD, and cache statistics.
+      tags:
+        - Legacy Blocks
+      responses:
+        '200':
+          description: Service state information
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InfoResponse'
+    post:
+      operationId: getInfoPost
+      summary: Get info (POST)
+      description: Returns the current LIB, HEAD, and cache statistics.
+      tags:
+        - Legacy Blocks
+      responses:
+        '200':
+          description: Service state information
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InfoResponse'
+
+  /v1/chain/get_info:
+    get:
+      operationId: getChainInfo
+      summary: Get info (chain API)
+      description: Alias for /v1/history/get_info for chain API compatibility.
+      tags:
+        - Legacy Blocks
+      responses:
+        '200':
+          description: Service state information
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InfoResponse'
+    post:
+      operationId: getChainInfoPost
+      summary: Get info (chain API, POST)
+      description: Alias for /v1/history/get_info for chain API compatibility.
+      tags:
+        - Legacy Blocks
+      responses:
+        '200':
+          description: Service state information
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InfoResponse'
+
+  /v1/history/get_notified_in_block:
+    post:
+      operationId: getNotifiedInBlock
+      summary: Get notifications in block
+      description: Returns the global sequence numbers and notified accounts for all actions in a block.
+      tags:
+        - Legacy Blocks
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BlockNumRequest'
+      responses:
+        '200':
+          description: Block notifications
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotifiedInBlockResponse'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1/history/get_raw_actions_in_block:
+    post:
+      operationId: getRawActionsInBlock
+      summary: Get actions in block
+      description: Returns all actions in a block with full action trace data.
+      tags:
+        - Legacy Blocks
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BlockNumRequest'
+      responses:
+        '200':
+          description: Block actions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RawActionsInBlockResponse'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1/history/get_block_binary:
+    post:
+      operationId: getBlockBinary
+      summary: Get raw block
+      description: Returns block data in binary format (compressed blockstream protocol).
+      tags:
+        - Legacy Blocks
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BlockNumRequest'
+      responses:
+        '200':
+          description: Binary block data
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Block not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1/history/get_actions_by_globs_binary:
+    post:
+      operationId: getActionsByGlobsBinary
+      summary: Get actions by sequences
+      description: |
+        Returns actions for the specified global sequence numbers in binary format.
+        Maximum 1000 global sequences per request.
+      tags:
+        - Legacy Blocks
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GlobalSeqsRequest'
+      responses:
+        '200':
+          description: Binary action data
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '400':
+          description: Invalid request or too many sequences
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Global sequence not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1/history/get_state_binary:
+    post:
+      operationId: getStateBinary
+      summary: Get HEAD/LIB binary
+      description: Returns the current HEAD and LIB block numbers in binary format.
+      tags:
+        - Legacy Blocks
+      responses:
+        '200':
+          description: Binary state data
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+
+  /v1/history/get_blocks_batch_binary:
+    post:
+      operationId: getBlocksBatchBinary
+      summary: Get block range binary
+      description: |
+        Returns a range of blocks as a chunked stream. Maximum 10000 blocks per batch.
+        Response format: stream of [block_num:4][data_len:4][data:data_len] chunks.
+      tags:
+        - Legacy Blocks
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BlockRangeRequest'
+      responses:
+        '200':
+          description: Chunked binary block data
+          headers:
+            Transfer-Encoding:
+              schema:
+                type: string
+                example: chunked
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '400':
+          description: Invalid request or batch too large
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Start block beyond HEAD
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+components:
+  schemas:
+    InfoResponse:
+      type: object
+      required:
+        - last_irreversible_block_num
+        - head_block_num
+      properties:
+        last_irreversible_block_num:
+          type: integer
+          format: uint32
+          description: Last irreversible block number (LIB)
+          example: 476500000
+        head_block_num:
+          type: integer
+          format: uint32
+          description: Head block number
+          example: 476500100
+        cache:
+          $ref: '#/components/schemas/CacheStats'
+
+    CacheStats:
+      type: object
+      properties:
+        hits:
+          type: integer
+          format: int64
+          description: Number of cache hits
+        misses:
+          type: integer
+          format: int64
+          description: Number of cache misses
+        size:
+          type: integer
+          description: Current cache size
+
+    BlockNumRequest:
+      type: object
+      required:
+        - block_num
+      properties:
+        block_num:
+          type: integer
+          format: uint32
+          description: Block number to query
+          example: 476500000
+
+    GlobalSeqsRequest:
+      type: object
+      required:
+        - global_seqs
+      properties:
+        global_seqs:
+          type: array
+          items:
+            type: integer
+            format: uint64
+          description: Global sequence numbers to query (max 1000)
+          maxItems: 1000
+          example: [8234567890, 8234567891]
+
+    BlockRangeRequest:
+      type: object
+      required:
+        - start_block
+        - end_block
+      properties:
+        start_block:
+          type: integer
+          format: uint32
+          description: First block in range (must be >= 2)
+          minimum: 2
+          example: 476500000
+        end_block:
+          type: integer
+          format: uint32
+          description: Last block in range (inclusive)
+          example: 476509999
+
+    NotifiedInBlockResponse:
+      type: object
+      properties:
+        glob_notifies:
+          type: array
+          items:
+            $ref: '#/components/schemas/GlobNotify'
+        id:
+          type: string
+          description: Block ID (64 hex characters)
+          pattern: '^[0-9a-f]{64}$'
+        previous:
+          type: string
+          description: Previous block ID
+          pattern: '^[0-9a-f]{64}$'
+        last_irreversible_block:
+          type: integer
+          format: uint32
+        head_block_num:
+          type: integer
+          format: uint32
+
+    GlobNotify:
+      type: object
+      properties:
+        global_action_seq:
+          type: integer
+          format: uint64
+        notifies:
+          type: array
+          items:
+            type: string
+          description: Account names that were notified
+
+    RawActionsInBlockResponse:
+      type: object
+      properties:
+        actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/ActionTrace'
+        id:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        previous:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        last_irreversible_block:
+          type: integer
+          format: uint32
+        head_block_num:
+          type: integer
+          format: uint32
+
+    ActionTrace:
+      type: object
+      properties:
+        action_ordinal:
+          type: integer
+        creator_action_ordinal:
+          type: integer
+        receiver:
+          type: string
+          description: Account that received the action
+        act:
+          $ref: '#/components/schemas/Action'
+        context_free:
+          type: boolean
+        elapsed:
+          type: integer
+          format: int64
+          description: Execution time in microseconds
+        account_ram_deltas:
+          type: array
+          items:
+            $ref: '#/components/schemas/AccountRAMDelta'
+        trx_id:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        block_num:
+          type: integer
+          format: uint32
+        block_time:
+          type: string
+          format: date-time
+        producer_block_id:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        receipt:
+          $ref: '#/components/schemas/ActionReceipt'
+
+    Action:
+      type: object
+      properties:
+        account:
+          type: string
+          description: Contract account name
+        name:
+          type: string
+          description: Action name
+        authorization:
+          type: array
+          items:
+            $ref: '#/components/schemas/PermissionLevel'
+        data:
+          description: Action data (hex string or decoded object)
+
+    PermissionLevel:
+      type: object
+      properties:
+        actor:
+          type: string
+        permission:
+          type: string
+
+    AccountRAMDelta:
+      type: object
+      properties:
+        account:
+          type: string
+        delta:
+          type: integer
+          format: int64
+
+    ActionReceipt:
+      type: object
+      properties:
+        receiver:
+          type: string
+        act_digest:
+          type: string
+        global_sequence:
+          type: integer
+          format: uint64
+        recv_sequence:
+          type: integer
+          format: uint64
+        auth_sequence:
+          type: array
+          items:
+            type: array
+            items: {}
+        code_sequence:
+          type: integer
+        abi_sequence:
+          type: integer
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Error message

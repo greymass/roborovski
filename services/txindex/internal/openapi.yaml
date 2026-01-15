@@ -1,0 +1,435 @@
+openapi: 3.1.0
+info:
+  title: Roborovski txindex API
+  description: Transaction index service for looking up transactions by ID
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:9500
+    description: Default local server
+
+tags:
+  - name: Transactions
+    description: Transaction lookup endpoints
+  - name: Legacy Transactions
+    description: v1 API endpoints for transaction lookup
+
+paths:
+  /v1/history/get_transaction:
+    get:
+      operationId: getTransactionQuery
+      summary: Get transaction
+      description: Retrieve a transaction by its ID, including block information and optionally action traces.
+      tags:
+        - Legacy Transactions
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Transaction ID (64-char hex, or unique prefix)
+        - name: traces
+          in: query
+          required: false
+          schema:
+            type: string
+            default: "true"
+          description: Include action traces (false or 0 to disable)
+      responses:
+        "200":
+          description: Transaction found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransactionResponse"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Transaction not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    post:
+      operationId: getTransactionPost
+      summary: Get transaction (POST)
+      description: Retrieve a transaction by its ID using POST. Identical to GET but accepts parameters in request body.
+      tags:
+        - Legacy Transactions
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - id
+              properties:
+                id:
+                  type: string
+                  description: Transaction ID (64-char hex, or unique prefix)
+                traces:
+                  type: boolean
+                  default: true
+                  description: Include action traces
+      responses:
+        "200":
+          description: Transaction found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransactionResponse"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Transaction not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v1/history/get_transaction_status:
+    get:
+      operationId: getTransactionStatusQuery
+      summary: Get transaction status
+      description: Check if a transaction exists and whether it is irreversible. Returns block info without action traces.
+      tags:
+        - Legacy Transactions
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Transaction ID (64-char hex, or unique prefix)
+      responses:
+        "200":
+          description: Transaction status found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransactionStatusResponse"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Transaction not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    post:
+      operationId: getTransactionStatusPost
+      summary: Get transaction status (POST)
+      description: Check transaction status using POST. Identical to GET but accepts parameters in request body.
+      tags:
+        - Legacy Transactions
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - id
+              properties:
+                id:
+                  type: string
+                  description: Transaction ID (64-char hex, or unique prefix)
+      responses:
+        "200":
+          description: Transaction status found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransactionStatusResponse"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Transaction not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /transaction/{id}:
+    get:
+      operationId: getTransactionPath
+      summary: Get transaction
+      description: Retrieve a transaction by its ID. Returns block information and optionally action traces.
+      tags:
+        - Transactions
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Transaction ID (64-char hex, or unique prefix)
+        - name: traces
+          in: query
+          required: false
+          schema:
+            type: string
+            default: "true"
+          description: Include action traces (false or 0 to disable)
+      responses:
+        "200":
+          description: Transaction found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransactionResultResponse"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransactionErrorResponse"
+        "404":
+          description: Transaction not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransactionErrorResponse"
+
+  /transaction/{id}/status:
+    get:
+      operationId: getTransactionStatusPath
+      summary: Get transaction status
+      description: Check if a transaction exists and whether it is irreversible. Lightweight endpoint without action traces.
+      tags:
+        - Transactions
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Transaction ID (64-char hex, or unique prefix)
+      responses:
+        "200":
+          description: Transaction status found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransactionStatusResultResponse"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransactionErrorResponse"
+        "404":
+          description: Transaction not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransactionErrorResponse"
+
+components:
+  schemas:
+    TransactionResponse:
+      type: object
+      required:
+        - id
+        - block_num
+        - block_time
+        - head_block_num
+        - last_irreversible_block
+        - irreversible
+      properties:
+        id:
+          type: string
+          description: Transaction ID
+        block_num:
+          type: integer
+          format: uint32
+          description: Block number containing the transaction
+        block_time:
+          type: string
+          description: Block timestamp
+        head_block_num:
+          type: integer
+          format: uint32
+          description: Current head block number
+        last_irreversible_block:
+          type: integer
+          format: uint32
+          description: Last irreversible block number
+        irreversible:
+          type: boolean
+          description: Whether the transaction is irreversible
+        transaction_num:
+          type: integer
+          description: Transaction index within the block
+        traces:
+          type: array
+          items:
+            $ref: "#/components/schemas/ActionTrace"
+          description: Action traces (if requested)
+        trx:
+          type: object
+          description: Full transaction data
+
+    TransactionResultResponse:
+      type: object
+      required:
+        - results
+      properties:
+        results:
+          $ref: "#/components/schemas/TransactionResponse"
+
+    TransactionStatusResponse:
+      type: object
+      required:
+        - state
+        - block_number
+        - block_id
+        - head_number
+        - irreversible_number
+      properties:
+        state:
+          type: string
+          enum: ["IRREVERSIBLE"]
+          description: Transaction state
+        block_number:
+          type: integer
+          format: uint32
+          description: Block number containing the transaction
+        block_id:
+          type: string
+          description: Block ID
+        head_number:
+          type: integer
+          format: uint32
+          description: Current head block number
+        irreversible_number:
+          type: integer
+          format: uint32
+          description: Last irreversible block number
+
+    TransactionStatusResultResponse:
+      type: object
+      required:
+        - results
+      properties:
+        results:
+          $ref: "#/components/schemas/TransactionStatusResponse"
+
+    ActionTrace:
+      type: object
+      properties:
+        action_ordinal:
+          type: integer
+        creator_action_ordinal:
+          type: integer
+        closest_unnotified_ancestor_action_ordinal:
+          type: integer
+        receipt:
+          type: object
+          properties:
+            receiver:
+              type: string
+            act_digest:
+              type: string
+            global_sequence:
+              type: string
+            recv_sequence:
+              type: string
+            auth_sequence:
+              type: array
+              items:
+                type: array
+            code_sequence:
+              type: integer
+            abi_sequence:
+              type: integer
+        receiver:
+          type: string
+        act:
+          type: object
+          properties:
+            account:
+              type: string
+            name:
+              type: string
+            authorization:
+              type: array
+              items:
+                type: object
+                properties:
+                  actor:
+                    type: string
+                  permission:
+                    type: string
+            data:
+              oneOf:
+                - type: object
+                - type: string
+            hex_data:
+              type: string
+        context_free:
+          type: boolean
+        elapsed:
+          type: integer
+        trx_id:
+          type: string
+        block_num:
+          type: integer
+        block_time:
+          type: string
+        producer_block_id:
+          type: string
+        account_ram_deltas:
+          type: array
+          items:
+            type: object
+            properties:
+              account:
+                type: string
+              delta:
+                type: integer
+
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: string
+          description: Error message
+
+    TransactionErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          required:
+            - code
+            - message
+          properties:
+            code:
+              type: string
+              description: Error code
+            message:
+              type: string
+              description: Error message
