@@ -1,4 +1,4 @@
-# Roborovski2 Workspace Makefile
+# Roborovski Workspace Makefile
 
 # Configuration
 BINDIR := bin
@@ -6,19 +6,25 @@ SERVICES := actionindex coreverify apiproxy streamproxy coreindex txindex
 NPROC := $(shell nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 
+# All modules (libraries + services) for tagging
+MODULES := $(shell find . -name "go.mod" -type f | sed 's|./||; s|/go.mod||' | sort)
+
 # =============================================================================
 # Main Targets
 # =============================================================================
 
 .PHONY: help
 help: ## Show this help message
-	@echo "Roborovski2 Workspace Commands:"
+	@echo "Roborovski Workspace Commands:"
 	@echo ""
 	@echo "Main:"
 	@grep -E '^(build|install|clean|test|verify|tidy):.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-25s %s\n", $$1, $$2}'
 	@echo ""
 	@echo "Individual Services (build/<name>, install/<name>):"
 	@echo "  $(SERVICES)" | fold -s -w 70 | sed 's/^/  /'
+	@echo ""
+	@echo "Release:"
+	@grep -E '^(tag-list|tag|tag-push|release):.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-25s %s\n", $$1, $$2}'
 	@echo ""
 	@echo "Other:"
 	@grep -E '^(uninstall|list):.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-25s %s\n", $$1, $$2}'
@@ -218,3 +224,82 @@ install/coreindex:
 install/txindex:
 	@echo "==> Installing txindex"
 	@go install ./services/txindex/cmd/txindex
+
+# =============================================================================
+# Release Targets
+# =============================================================================
+
+.PHONY: tag-list
+tag-list: ## List all tags that would be created for VERSION
+	@if [ "$(VERSION)" = "dev" ] || [ -z "$(VERSION)" ]; then \
+		echo "Error: VERSION is required. Usage: make tag-list VERSION=v1.0.0-beta1"; \
+		exit 1; \
+	fi
+	@echo "Tags to be created for $(VERSION):"
+	@echo ""
+	@echo "  $(VERSION)  (root tag)"
+	@for mod in $(MODULES); do \
+		echo "  $$mod/$(VERSION)"; \
+	done
+	@echo ""
+	@echo "Total: $$(echo $(MODULES) | wc -w | tr -d ' ') module tags + 1 root tag"
+
+.PHONY: tag
+tag: ## Create git tags for all modules (requires VERSION=vX.Y.Z)
+	@if [ "$(VERSION)" = "dev" ] || [ -z "$(VERSION)" ]; then \
+		echo "Error: VERSION is required. Usage: make tag VERSION=v1.0.0-beta1"; \
+		exit 1; \
+	fi
+	@if ! echo "$(VERSION)" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+'; then \
+		echo "Error: VERSION must be in format vX.Y.Z (e.g., v1.0.0-beta1)"; \
+		exit 1; \
+	fi
+	@if [ -n "$$(git status --porcelain)" ]; then \
+		echo "Error: Working directory is not clean. Commit or stash changes first."; \
+		exit 1; \
+	fi
+	@echo "Creating tags for $(VERSION)..."
+	@git tag -a "$(VERSION)" -m "Release $(VERSION)" 2>/dev/null || echo "  $(VERSION) already exists, skipping"
+	@for mod in $(MODULES); do \
+		tag="$$mod/$(VERSION)"; \
+		if git rev-parse "$$tag" >/dev/null 2>&1; then \
+			echo "  $$tag already exists, skipping"; \
+		else \
+			git tag -a "$$tag" -m "Release $$mod $(VERSION)"; \
+			echo "  Created $$tag"; \
+		fi; \
+	done
+	@echo ""
+	@echo "✅ Tags created. Run 'make tag-push' to push to origin."
+
+.PHONY: tag-push
+tag-push: ## Push all tags to origin
+	@echo "Pushing all tags to origin..."
+	@git push origin --tags
+	@echo ""
+	@echo "✅ Tags pushed to origin"
+
+.PHONY: tag-delete
+tag-delete: ## Delete all tags for VERSION (local only, requires VERSION=vX.Y.Z)
+	@if [ "$(VERSION)" = "dev" ] || [ -z "$(VERSION)" ]; then \
+		echo "Error: VERSION is required. Usage: make tag-delete VERSION=v1.0.0-beta1"; \
+		exit 1; \
+	fi
+	@echo "Deleting local tags for $(VERSION)..."
+	@git tag -d "$(VERSION)" 2>/dev/null || true
+	@for mod in $(MODULES); do \
+		git tag -d "$$mod/$(VERSION)" 2>/dev/null || true; \
+	done
+	@echo ""
+	@echo "✅ Local tags deleted. Remote tags must be deleted manually if needed."
+
+.PHONY: release
+release: verify ## Full release: verify + tag + push (requires VERSION=vX.Y.Z)
+	@if [ "$(VERSION)" = "dev" ] || [ -z "$(VERSION)" ]; then \
+		echo "Error: VERSION is required. Usage: make release VERSION=v1.0.0-beta1"; \
+		exit 1; \
+	fi
+	@$(MAKE) tag VERSION=$(VERSION) --no-print-directory
+	@$(MAKE) tag-push --no-print-directory
+	@echo ""
+	@echo "✅ Release $(VERSION) complete"
