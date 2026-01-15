@@ -16,6 +16,7 @@ Thumbs.db
 # Go
 *.test
 *.out
+go.work
 go.work.sum
 
 # Local config
