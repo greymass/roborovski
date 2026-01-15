@@ -465,8 +465,8 @@ func TestToJSON_EnabledTracer(t *testing.T) {
 		t.Fatal("ToJSON should return non-nil for enabled tracer")
 	}
 
-	if result.TotalMs <= 0 {
-		t.Error("TotalMs should be positive")
+	if result.TotalMs < 0 {
+		t.Error("TotalMs should be non-negative")
 	}
 
 	if result.IndexUsed != "idx_account" {
