@@ -133,7 +133,13 @@ func main() {
 	mux.Handle("/docs", docsHandler)
 	mux.Handle("/docs/", docsHandler)
 
-	mux.Handle("/", proxyHandler)
+	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			http.Redirect(w, r, "/docs", http.StatusFound)
+			return
+		}
+		proxyHandler.ServeHTTP(w, r)
+	}))
 
 	handler := middleware.CorrelationMiddleware(
 		cfMiddleware.Middleware(
