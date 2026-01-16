@@ -16,6 +16,7 @@ import (
 	"github.com/greymass/roborovski/libraries/profiler"
 	"github.com/greymass/roborovski/libraries/server"
 	"github.com/greymass/roborovski/services/txindex/internal"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 var Version = "dev"
@@ -244,6 +245,18 @@ func main() {
 				logger.Printf("http", "RPC server error: %v", err)
 			}
 		}()
+	}
+
+	if cfg.MetricsListen != "none" && cfg.MetricsListen != "" {
+		metricsMux := http.NewServeMux()
+		metricsMux.Handle("/metrics", promhttp.Handler())
+		metricsListener := server.SocketListen(cfg.MetricsListen)
+		go func() {
+			if err := http.Serve(metricsListener, metricsMux); err != nil {
+				logger.Printf("startup", "metrics server failed: %v", err)
+			}
+		}()
+		logger.Printf("startup", "Metrics server listening on %s", cfg.MetricsListen)
 	}
 
 	sigChan := make(chan os.Signal, 1)

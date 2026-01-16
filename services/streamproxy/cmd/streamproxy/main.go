@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	_ "net/http/pprof"
@@ -13,6 +12,7 @@ import (
 	"github.com/greymass/roborovski/libraries/config"
 	"github.com/greymass/roborovski/libraries/logger"
 	"github.com/greymass/roborovski/libraries/profiler"
+	"github.com/greymass/roborovski/libraries/server"
 	"github.com/greymass/roborovski/services/streamproxy/internal/backend"
 	"github.com/greymass/roborovski/services/streamproxy/internal/metrics"
 	"github.com/greymass/roborovski/services/streamproxy/internal/proxy"
@@ -148,19 +148,15 @@ func main() {
 
 	mux.Handle("/metrics", promhttp.Handler())
 
-	metricsServer := &http.Server{
-		Addr:         cfg.MetricsListen,
-		Handler:      mux,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
+	if cfg.MetricsListen != "none" && cfg.MetricsListen != "" {
+		metricsListener := server.SocketListen(cfg.MetricsListen)
+		go func() {
+			logger.Printf("startup", "Metrics server started on %s", cfg.MetricsListen)
+			if err := http.Serve(metricsListener, mux); err != nil && err != http.ErrServerClosed {
+				logger.Printf("startup", "Metrics server error: %v", err)
+			}
+		}()
 	}
-
-	go func() {
-		logger.Printf("startup", "Metrics server started on %s", cfg.MetricsListen)
-		if err := metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Printf("startup", "Metrics server error: %v", err)
-		}
-	}()
 
 	logger.Printf("startup", "streamproxy %s started", Version)
 
@@ -169,11 +165,6 @@ func main() {
 	<-stop
 
 	logger.Printf("startup", "Shutting down...")
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	metricsServer.Shutdown(ctx)
 
 	logger.Printf("startup", "Shutdown complete")
 }

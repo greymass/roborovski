@@ -8,11 +8,12 @@ type Config struct {
 	SyncSource    string `name:"sync-source" help:"Optional sync source (stream:// or http://). If set, uses this for syncing while history-source is used for queries."`
 
 	// Server
-	HTTPListen   string `name:"http-listen" default:":9410" help:"HTTP API TCP address ('none' to disable)"`
-	HTTPSocket   string `name:"http-socket" default:"./actionindex.sock" help:"HTTP API Unix socket ('none' to disable)"`
-	StreamListen string `name:"stream-listen" default:"none" help:"Streaming TCP address for WebSocket clients ('none' to disable)"`
-	StreamSocket string `name:"stream-socket" default:"none" help:"Streaming TCP address for binary protocol clients ('none' to disable)"`
-	ReadOnly     bool   `name:"read-only" help:"Run in read-only mode (no indexing)"`
+	HTTPListen    string `name:"http-listen" default:":9410" help:"HTTP API TCP address ('none' to disable)"`
+	HTTPSocket    string `name:"http-socket" default:"./actionindex.sock" help:"HTTP API Unix socket ('none' to disable)"`
+	MetricsListen string `name:"metrics-listen" default:"none" help:"Metrics endpoint address (e.g., 'localhost:9090' or '/path/to/metrics.sock')"`
+	StreamListen  string `name:"stream-listen" default:"none" help:"Streaming TCP address for WebSocket clients ('none' to disable)"`
+	StreamSocket  string `name:"stream-socket" default:"none" help:"Streaming TCP address for binary protocol clients ('none' to disable)"`
+	ReadOnly      bool   `name:"read-only" help:"Run in read-only mode (no indexing)"`
 
 	// Streaming
 	StreamMaxClients        int `name:"stream-max-clients" default:"100" help:"Maximum concurrent streaming clients"`

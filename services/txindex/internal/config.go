@@ -11,9 +11,10 @@ type Config struct {
 	GOGC             int      `name:"gogc" default:"20" help:"Go GC target percentage"`
 	HistorySource    string   `name:"history-source" required:"true" help:"History source (local path, http://, http+unix://, or stream://)"`
 	IndexPath        string   `name:"index-storage" alias:"index-path,path" default:"./txindex" help:"Path to transaction index directory"`
-	HTTPListen       string   `name:"http-listen" default:":9430" help:"HTTP API TCP address ('none' to disable)"`
-	HTTPSocket       string   `name:"http-socket" default:"./txindex.sock" help:"HTTP API Unix socket ('none' to disable)"`
-	LogFilter        []string `name:"log-filter" default:"startup,sync,http,timing,stats" help:"Log category filter (comma-separated)"`
+	HTTPListen    string   `name:"http-listen" default:":9430" help:"HTTP API TCP address ('none' to disable)"`
+	HTTPSocket    string   `name:"http-socket" default:"./txindex.sock" help:"HTTP API Unix socket ('none' to disable)"`
+	MetricsListen string   `name:"metrics-listen" default:"none" help:"Metrics endpoint address (e.g., 'localhost:9090' or '/path/to/metrics.sock')"`
+	LogFilter     []string `name:"log-filter" default:"startup,sync,http,timing,stats" help:"Log category filter (comma-separated)"`
 	LogFile          string   `name:"log-file" help:"Log output file path (logs to both stdout and file when set)"`
 	LogInterval      string   `name:"log-interval" default:"3" help:"Sync progress log interval. Supports duration syntax (500ms, 1s, 3s)."`
 	LRUCacheSlices   int      `name:"lru-cache-slices" default:"20" help:"Number of slice mmap handles to keep open"`

@@ -32,6 +32,7 @@ import (
 	"github.com/greymass/roborovski/libraries/server"
 	"github.com/greymass/roborovski/libraries/tracereader"
 	"github.com/greymass/roborovski/services/coreindex/internal/appendlog"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 var Version = "dev"
@@ -2239,6 +2240,18 @@ func main() {
 	if len(httpListeners) > 0 {
 		serverConfig.AcceptHTTP = true
 		logger.Printf("http", "HTTP API ready on %s", strings.Join(httpListeners, ", "))
+	}
+
+	if cfg.MetricsListen != "none" && cfg.MetricsListen != "" {
+		metricsMux := http.NewServeMux()
+		metricsMux.Handle("/metrics", promhttp.Handler())
+		metricsListener := server.SocketListen(cfg.MetricsListen)
+		go func() {
+			if err := http.Serve(metricsListener, metricsMux); err != nil {
+				logger.Printf("http", "metrics server failed: %v", err)
+			}
+		}()
+		logger.Printf("http", "Metrics server listening on %s", cfg.MetricsListen)
 	}
 
 	if cfg.Profile {

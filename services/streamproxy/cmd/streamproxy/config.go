@@ -23,7 +23,7 @@ type Config struct {
 
 	TCPListen       string `name:"tcp-listen" alias:"stream-listen" default:":9500" help:"TCP listen address"`
 	WebSocketListen string `name:"websocket-listen" default:":9501" help:"WebSocket listen address"`
-	MetricsListen   string `name:"metrics-listen" default:":9502" help:"Metrics listen address"`
+	MetricsListen   string `name:"metrics-listen" default:"none" help:"Metrics endpoint address (e.g., 'localhost:9502' or '/path/to/metrics.sock')"`
 
 	MaxConnections    int           `name:"max-connections" default:"10000" help:"Maximum connections"`
 	ConnectionTimeout time.Duration `name:"connection-timeout" default:"10s" help:"Connection timeout"`

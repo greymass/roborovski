@@ -18,8 +18,9 @@ type RouteConfig struct {
 type Config struct {
 	Debug           bool     `name:"debug" help:"Enable debug logging (all categories)"`
 	GOGC            int      `name:"gogc" default:"100" help:"Go GC target percentage"`
-	HTTPListen      string   `name:"http-listen" alias:"listen" default:":8080" help:"HTTP API TCP address ('none' to disable)"`
-	HTTPSocket      string   `name:"http-socket" default:"./apiproxy.sock" help:"HTTP API Unix socket ('none' to disable)"`
+	HTTPListen    string   `name:"http-listen" alias:"listen" default:":8080" help:"HTTP API TCP address ('none' to disable)"`
+	HTTPSocket    string   `name:"http-socket" default:"./apiproxy.sock" help:"HTTP API Unix socket ('none' to disable)"`
+	MetricsListen string   `name:"metrics-listen" default:"none" help:"Metrics endpoint address (e.g., 'localhost:9090' or '/path/to/metrics.sock')"`
 	LogFile         string   `name:"log-file" help:"Log output file path (logs to both stdout and file when set)"`
 	LogFilter       []string `name:"log-filter" default:"startup,http,proxy" help:"Log category filter (comma-separated)"`
 	Profile         bool     `name:"profile" help:"Enable periodic CPU profiling"`

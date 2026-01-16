@@ -22,6 +22,7 @@ import (
 	"github.com/greymass/roborovski/libraries/profiler"
 	"github.com/greymass/roborovski/libraries/server"
 	"github.com/greymass/roborovski/services/actionindex/internal"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 var Version = "dev"
@@ -402,6 +403,18 @@ func main() {
 	if cfg.HTTPSocket != "none" {
 		unixListener := server.SocketListen(cfg.HTTPSocket)
 		go httpServer.Serve(unixListener)
+	}
+
+	if cfg.MetricsListen != "none" && cfg.MetricsListen != "" {
+		metricsMux := http.NewServeMux()
+		metricsMux.Handle("/metrics", promhttp.Handler())
+		metricsListener := server.SocketListen(cfg.MetricsListen)
+		go func() {
+			if err := http.Serve(metricsListener, metricsMux); err != nil {
+				logger.Printf("startup", "metrics server failed: %v", err)
+			}
+		}()
+		logger.Printf("startup", "Metrics server listening on %s", cfg.MetricsListen)
 	}
 
 	var syncer *internal.Syncer

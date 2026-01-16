@@ -120,8 +120,6 @@ func main() {
 		fmt.Fprintf(w, "OK\n")
 	}))
 
-	mux.Handle("/metrics", promhttp.Handler())
-
 	mux.Handle("/openapi.json", openapiAggregator.Handler())
 	mux.Handle("/openapi.yaml", openapiAggregator.Handler())
 
@@ -160,6 +158,18 @@ func main() {
 				logger.Printf("startup", "pprof server failed: %v", err)
 			}
 		}()
+	}
+
+	if cfg.MetricsListen != "none" && cfg.MetricsListen != "" {
+		metricsMux := http.NewServeMux()
+		metricsMux.Handle("/metrics", promhttp.Handler())
+		metricsListener := server.SocketListen(cfg.MetricsListen)
+		go func() {
+			if err := http.Serve(metricsListener, metricsMux); err != nil {
+				logger.Printf("startup", "metrics server failed: %v", err)
+			}
+		}()
+		logger.Printf("startup", "Metrics server listening on %s", cfg.MetricsListen)
 	}
 
 	logger.Printf("startup", "Starting apiproxy %s", Version)

@@ -29,8 +29,9 @@ type Config struct {
 	QueryTrace       bool   `name:"query-trace" help:"Enable query tracing to log API performance per request"`
 	ReadOnly         bool   `name:"read-only" help:"Run in read-only mode (no syncing)"`
 
-	HTTPListen string `name:"http-listen" default:":9400" help:"HTTP API TCP address (use 'none' to disable)"`
-	HTTPSocket string `name:"http-socket" default:"./coreindex.sock" help:"HTTP API unix socket (use 'none' to disable)"`
+	HTTPListen    string `name:"http-listen" default:":9400" help:"HTTP API TCP address (use 'none' to disable)"`
+	HTTPSocket    string `name:"http-socket" default:"./coreindex.sock" help:"HTTP API unix socket (use 'none' to disable)"`
+	MetricsListen string `name:"metrics-listen" default:"none" help:"Metrics endpoint address (e.g., 'localhost:9090' or '/path/to/metrics.sock')"`
 
 	StreamEnabled    bool   `name:"stream-enabled" default:"true" help:"Enable streaming API"`
 	StreamListen     string `name:"stream-listen" default:":9401" help:"Streaming API TCP address (use 'none' to disable)"`
