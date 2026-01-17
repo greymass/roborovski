@@ -209,7 +209,7 @@ func main() {
 		for i := range endKey {
 			endKey[i] = 0xff
 		}
-		if err := store.DB().Compact([]byte{0x00}, endKey, true); err != nil {
+		if err := store.DB().Compact(context.Background(), []byte{0x00}, endKey, true); err != nil {
 			logger.Fatal("Compaction failed: %v", err)
 		}
 		logger.Printf("startup", "Compaction complete in %v", time.Since(start))

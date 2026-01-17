@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cockroachdb/pebble"
+	"github.com/cockroachdb/pebble/v2"
 )
 
 func TestTimeMapper_Record(t *testing.T) {

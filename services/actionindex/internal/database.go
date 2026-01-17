@@ -8,8 +8,9 @@ import (
 	"time"
 
 	"github.com/RoaringBitmap/roaring/roaring64"
-	"github.com/cockroachdb/pebble"
-	"github.com/cockroachdb/pebble/bloom"
+	"github.com/cockroachdb/pebble/v2"
+	"github.com/cockroachdb/pebble/v2/bloom"
+	"github.com/cockroachdb/pebble/v2/sstable/block"
 	"github.com/greymass/roborovski/libraries/logger"
 )
 
@@ -95,7 +96,11 @@ func (pebbleLogger) Fatalf(format string, args ...interface{}) {
 	logger.Fatal(format, args...)
 }
 
-func makeFriendlyEventListener(memTableStopThreshold int) pebble.EventListener {
+func (pebbleLogger) Errorf(format string, args ...interface{}) {
+	logger.Printf("pebble", "ERROR: "+format, args...)
+}
+
+func makeFriendlyEventListener() pebble.EventListener {
 	return pebble.EventListener{
 		CompactionEnd: func(info pebble.CompactionInfo) {
 			var inputSize, outputSize uint64
@@ -177,34 +182,39 @@ func NewStore(path string, readOnly bool, cfg StoreConfig) (*Store, error) {
 		compactors = 4 // Default 4
 	}
 
-	eventListener := makeFriendlyEventListener(memTableStopThreshold)
+	eventListener := makeFriendlyEventListener()
 
 	cacheSize := cfg.CacheSizeMB << 20
 	if cacheSize < 64<<20 {
 		cacheSize = 64 << 20 // Minimum 64 MB
 	}
+	cache := pebble.NewCache(cacheSize)
+	defer cache.Unref()
+
+	snappyFn := func() *block.CompressionProfile { return block.SnappyCompression }
 
 	opts := &pebble.Options{
 		Logger:                      plog,
 		EventListener:               &eventListener,
 		Merger:                      legacyBitmapMerger,
-		Cache:                       pebble.NewCache(cacheSize),
-		MaxConcurrentCompactions:    func() int { return compactors },
+		Cache:                       cache,
 		MemTableSize:                uint64(memTableSize),
 		MemTableStopWritesThreshold: memTableStopThreshold,
 		L0CompactionThreshold:       4,
 		L0StopWritesThreshold:       12,
 		LBaseMaxBytes:               64 << 20,
-		Levels: []pebble.LevelOptions{
-			{TargetFileSize: 4 << 20, FilterPolicy: bloom.FilterPolicy(10), Compression: pebble.SnappyCompression},
-			{TargetFileSize: 8 << 20, FilterPolicy: bloom.FilterPolicy(10), Compression: pebble.SnappyCompression},
-			{TargetFileSize: 16 << 20, FilterPolicy: bloom.FilterPolicy(10), Compression: pebble.SnappyCompression},
-			{TargetFileSize: 32 << 20, FilterPolicy: bloom.FilterPolicy(10), Compression: pebble.SnappyCompression},
-			{TargetFileSize: 64 << 20, FilterPolicy: bloom.FilterPolicy(10), Compression: pebble.SnappyCompression},
-			{TargetFileSize: 128 << 20, FilterPolicy: bloom.FilterPolicy(10), Compression: pebble.SnappyCompression},
-			{TargetFileSize: 256 << 20, FilterPolicy: bloom.FilterPolicy(10), Compression: pebble.SnappyCompression},
-		},
 	}
+
+	opts.Experimental.L0CompactionConcurrency = compactors
+	opts.Experimental.CompactionDebtConcurrency = 1 << 30
+
+	opts.Levels[0] = pebble.LevelOptions{FilterPolicy: bloom.FilterPolicy(10), Compression: snappyFn}
+	opts.Levels[1] = pebble.LevelOptions{FilterPolicy: bloom.FilterPolicy(10), Compression: snappyFn}
+	opts.Levels[2] = pebble.LevelOptions{FilterPolicy: bloom.FilterPolicy(10), Compression: snappyFn}
+	opts.Levels[3] = pebble.LevelOptions{FilterPolicy: bloom.FilterPolicy(10), Compression: snappyFn}
+	opts.Levels[4] = pebble.LevelOptions{FilterPolicy: bloom.FilterPolicy(10), Compression: snappyFn}
+	opts.Levels[5] = pebble.LevelOptions{FilterPolicy: bloom.FilterPolicy(10), Compression: snappyFn}
+	opts.Levels[6] = pebble.LevelOptions{FilterPolicy: bloom.FilterPolicy(10), Compression: snappyFn}
 
 	if readOnly {
 		opts.ReadOnly = true
@@ -293,7 +303,7 @@ func (s *Store) GetMetrics() PebbleMetrics {
 		FlushCount:      m.Flush.Count,
 		CompactionCount: m.Compact.Count,
 		CompactingBytes: m.Compact.InProgressBytes,
-		L0FileCount:     m.Levels[0].NumFiles,
+		L0FileCount:     m.Levels[0].TablesCount,
 		DiskSpaceUsage:  m.DiskSpaceUsage(),
 	}
 }
@@ -306,3 +316,4 @@ func (s *Store) LogMetrics() {
 		logger.FormatBytes(m.CompactingBytes),
 		logger.FormatBytes(int64(m.DiskSpaceUsage)))
 }
+

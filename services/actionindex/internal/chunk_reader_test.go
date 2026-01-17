@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/cockroachdb/pebble"
+	"github.com/cockroachdb/pebble/v2"
 )
 
 func setupTestDB(t *testing.T) (*pebble.DB, *ChunkMetadata, *ChunkWriter, func()) {

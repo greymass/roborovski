@@ -4,7 +4,7 @@ go 1.25.3
 
 require (
 	github.com/RoaringBitmap/roaring v1.9.4
-	github.com/cockroachdb/pebble v1.1.5
+	github.com/cockroachdb/pebble/v2 v2.1.3
 	github.com/greymass/roborovski/libraries/abicache v0.0.0
 	github.com/greymass/roborovski/libraries/corereader v0.0.0
 	github.com/greymass/roborovski/libraries/chain v0.0.0

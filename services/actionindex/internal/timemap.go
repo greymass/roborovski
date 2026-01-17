@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cockroachdb/pebble"
+	"github.com/cockroachdb/pebble/v2"
 )
 
 const (
