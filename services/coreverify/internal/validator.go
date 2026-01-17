@@ -75,6 +75,7 @@ type ValidationSummary struct {
 type Validator struct {
 	basePath       string
 	workers        int
+	batchSize      int
 	fullValidation bool
 	checkOnblock   bool
 	maxBlocks      int
@@ -90,13 +91,17 @@ type Validator struct {
 }
 
 // NewValidator creates a new validator
-func NewValidator(basePath string, workers int, fullValidation, checkOnblock bool, maxBlocks int, repair, debug, outputJSON bool) *Validator {
+func NewValidator(basePath string, workers, batchSize int, fullValidation, checkOnblock bool, maxBlocks int, repair, debug, outputJSON bool) *Validator {
 	if workers <= 0 {
 		workers = 4
+	}
+	if batchSize <= 0 {
+		batchSize = 1000
 	}
 	return &Validator{
 		basePath:       basePath,
 		workers:        workers,
+		batchSize:      batchSize,
 		fullValidation: fullValidation,
 		checkOnblock:   checkOnblock,
 		maxBlocks:      maxBlocks,
@@ -608,13 +613,12 @@ func (v *Validator) validateBlocksOnblock(sliceInfo SliceInfo, _ string, blockIn
 
 	entries := blockIndex.GetAllEntries()
 
-	const batchSize = 100
-	for i := 0; i < len(entries); i += batchSize {
+	for i := 0; i < len(entries); i += v.batchSize {
 		if maxBlocks > 0 && result.BlocksChecked >= maxBlocks {
 			break
 		}
 
-		batchEnd := i + batchSize
+		batchEnd := i + v.batchSize
 		if batchEnd > len(entries) {
 			batchEnd = len(entries)
 		}
