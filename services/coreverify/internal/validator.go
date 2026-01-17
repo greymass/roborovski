@@ -7,8 +7,13 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/greymass/roborovski/libraries/chain"
+	"github.com/greymass/roborovski/libraries/corereader"
+	"github.com/greymass/roborovski/libraries/logger"
 )
 
 // ValidationIssue represents a single validation problem
@@ -34,6 +39,8 @@ type SliceValidation struct {
 	Finalized      bool              `json:"finalized"`
 	Issues         []ValidationIssue `json:"issues"`
 	Duration       time.Duration     `json:"duration_ms"`
+	OnblockCount   int               `json:"onblock_count,omitempty"`
+	BlocksChecked  int               `json:"blocks_checked,omitempty"`
 }
 
 // ValidationReport is the final validation summary
@@ -57,6 +64,9 @@ type ValidationSummary struct {
 	ActiveSlices    int     `json:"active_slices"`
 	Errors          int     `json:"errors"`
 	Warnings        int     `json:"warnings"`
+	MissingOnblock  int     `json:"missing_onblock,omitempty"`
+	TotalOnblocks   int     `json:"total_onblocks,omitempty"`
+	BlocksChecked   int     `json:"blocks_checked,omitempty"`
 	DurationSeconds float64 `json:"duration_seconds"`
 	ValidationRate  float64 `json:"validation_rate_slices_per_sec"`
 }
@@ -66,6 +76,8 @@ type Validator struct {
 	basePath       string
 	workers        int
 	fullValidation bool
+	checkOnblock   bool
+	maxBlocks      int
 	repair         bool
 	debug          bool
 	outputJSON     bool
@@ -73,10 +85,12 @@ type Validator struct {
 	slices   []SliceInfo
 	issues   []ValidationIssue
 	issuesMu sync.Mutex
+
+	reader corereader.Reader
 }
 
 // NewValidator creates a new validator
-func NewValidator(basePath string, workers int, fullValidation, repair, debug, outputJSON bool) *Validator {
+func NewValidator(basePath string, workers int, fullValidation, checkOnblock bool, maxBlocks int, repair, debug, outputJSON bool) *Validator {
 	if workers <= 0 {
 		workers = 4
 	}
@@ -84,6 +98,8 @@ func NewValidator(basePath string, workers int, fullValidation, repair, debug, o
 		basePath:       basePath,
 		workers:        workers,
 		fullValidation: fullValidation,
+		checkOnblock:   checkOnblock,
+		maxBlocks:      maxBlocks,
 		repair:         repair,
 		debug:          debug,
 		outputJSON:     outputJSON,
@@ -96,17 +112,11 @@ func (v *Validator) ValidateStorage() (*ValidationReport, error) {
 	startTime := time.Now()
 
 	if !v.outputJSON {
-		fmt.Printf("coreverify v1.0.0\n")
-		fmt.Printf("===================\n\n")
-		fmt.Printf("Storage Path: %s\n", v.basePath)
-		fmt.Printf("Validation Mode: %s\n", v.getModeName())
-		fmt.Printf("Workers: %d\n\n", v.workers)
+		logger.Printf("info", "coreverify v1.0.0")
+		logger.Printf("info", "Path: %s", v.basePath)
 	}
 
 	// Step 1: Discover slices
-	if !v.outputJSON {
-		fmt.Printf("Scanning slices...\n")
-	}
 	slices, err := v.discoverSlices()
 	if err != nil {
 		return nil, fmt.Errorf("failed to discover slices: %w", err)
@@ -120,15 +130,48 @@ func (v *Validator) ValidateStorage() (*ValidationReport, error) {
 	// Calculate block range
 	firstBlock := slices[0].StartBlock
 	lastBlock := slices[len(slices)-1].EndBlock
+	totalSlices := len(slices)
+
+	// Apply max-blocks limit if set
+	if v.maxBlocks > 0 {
+		var blocksAccumulated uint32
+		var limitedSlices []SliceInfo
+		for _, slice := range slices {
+			sliceBlocks := slice.EndBlock - slice.StartBlock + 1
+			if blocksAccumulated+sliceBlocks > uint32(v.maxBlocks) {
+				if blocksAccumulated == 0 {
+					limitedSlices = append(limitedSlices, slice)
+				}
+				break
+			}
+			limitedSlices = append(limitedSlices, slice)
+			blocksAccumulated += sliceBlocks
+		}
+		slices = limitedSlices
+		v.slices = slices
+		lastBlock = slices[len(slices)-1].EndBlock
+	}
 
 	if !v.outputJSON {
-		fmt.Printf("✓ Found %d slices (blocks %d-%d)\n\n", len(slices), firstBlock, lastBlock)
+		scopeInfo := fmt.Sprintf("%d slices, blocks %d-%d", len(slices), firstBlock, lastBlock)
+		if v.maxBlocks > 0 {
+			scopeInfo = fmt.Sprintf("%d/%d slices, blocks %d-%d (limit: %d)", len(slices), totalSlices, firstBlock, lastBlock, v.maxBlocks)
+		}
+		logger.Printf("info", "Scope: %s | Mode: %s | Workers: %d", scopeInfo, v.getModeShortName(), v.workers)
+	}
+
+	// Open corereader if onblock checking is enabled (shared across all slices)
+	if v.checkOnblock {
+		cfg := corereader.DefaultOpenConfig()
+		reader, err := corereader.Open(v.basePath, cfg)
+		if err != nil {
+			return nil, fmt.Errorf("failed to open corereader: %w", err)
+		}
+		v.reader = reader
+		defer reader.Close()
 	}
 
 	// Step 2: Validate slices in parallel
-	if !v.outputJSON {
-		fmt.Printf("Validating slices...\n")
-	}
 	results := v.validateSlicesParallel(slices)
 
 	// Step 3: Cross-slice validation
@@ -147,10 +190,23 @@ func (v *Validator) ValidateStorage() (*ValidationReport, error) {
 }
 
 func (v *Validator) getModeName() string {
+	if v.checkOnblock {
+		return "ONBLOCK (check eosio::onblock in each block)"
+	}
 	if v.fullValidation {
 		return "FULL (decompress + parse all blocks)"
 	}
 	return "FAST (index-only)"
+}
+
+func (v *Validator) getModeShortName() string {
+	if v.checkOnblock {
+		return "ONBLOCK"
+	}
+	if v.fullValidation {
+		return "FULL"
+	}
+	return "FAST"
 }
 
 // discoverSlices scans the filesystem for slice directories
@@ -182,7 +238,7 @@ func (v *Validator) discoverSlices() ([]SliceInfo, error) {
 		endBlock, globMin, globMax, err := v.findLastBlockInIndex(blockIndexPath)
 		if err != nil {
 			if v.debug {
-				fmt.Printf("WARNING: Failed to read blocks.index for %s: %v\n", entry.Name(), err)
+				logger.Printf("debug", "Failed to read blocks.index for %s: %v", entry.Name(), err)
 			}
 			continue
 		}
@@ -271,6 +327,12 @@ func (v *Validator) validateSlicesParallel(slices []SliceInfo) []SliceValidation
 	results := make([]SliceValidation, len(slices))
 	resultsMu := sync.Mutex{}
 
+	// Calculate total expected blocks for progress
+	var totalExpectedBlocks uint32
+	for _, slice := range slices {
+		totalExpectedBlocks += slice.EndBlock - slice.StartBlock + 1
+	}
+
 	// Create work queue
 	work := make(chan int, len(slices))
 	for i := range slices {
@@ -279,25 +341,34 @@ func (v *Validator) validateSlicesParallel(slices []SliceInfo) []SliceValidation
 	close(work)
 
 	// Progress tracking
-	var completed uint32
+	var completedSlices uint32
+	var completedBlocks uint32
+	startTime := time.Now()
 	progressTicker := time.NewTicker(2 * time.Second)
 	defer progressTicker.Stop()
 
 	// Start progress reporter
 	done := make(chan struct{})
+	progressDone := make(chan struct{})
 	if !v.outputJSON {
 		go func() {
+			defer close(progressDone)
 			for {
 				select {
 				case <-progressTicker.C:
-					progress := float64(completed) / float64(len(slices)) * 100
-					fmt.Printf("\rValidating slices... %d/%d (%.1f%%)", completed, len(slices), progress)
+					elapsed := time.Since(startTime).Seconds()
+					blocks := completedBlocks
+					rate := float64(blocks) / elapsed
+					pct := float64(blocks) / float64(totalExpectedBlocks) * 100
+					logger.Printf("progress", "%d/%d slices | %d/%d blocks (%.1f%%) | %.0f blocks/sec",
+						completedSlices, len(slices), blocks, totalExpectedBlocks, pct, rate)
 				case <-done:
-					fmt.Printf("\rValidating slices... %d/%d (100.0%%)\n", len(slices), len(slices))
 					return
 				}
 			}
 		}()
+	} else {
+		close(progressDone)
 	}
 
 	// Start workers
@@ -310,7 +381,8 @@ func (v *Validator) validateSlicesParallel(slices []SliceInfo) []SliceValidation
 				result := v.validateSlice(slices[idx])
 				resultsMu.Lock()
 				results[idx] = result
-				completed++
+				completedSlices++
+				completedBlocks += result.BlocksActual
 				resultsMu.Unlock()
 			}
 		}()
@@ -318,6 +390,7 @@ func (v *Validator) validateSlicesParallel(slices []SliceInfo) []SliceValidation
 
 	wg.Wait()
 	close(done)
+	<-progressDone
 
 	return results
 }
@@ -376,6 +449,14 @@ func (v *Validator) validateSlice(sliceInfo SliceInfo) SliceValidation {
 	if v.fullValidation && blockIndex != nil {
 		dataIssues := v.validateDataLog(sliceInfo, slicePath, blockIndex)
 		result.Issues = append(result.Issues, dataIssues...)
+	}
+
+	// Check 4 (optional): Onblock validation
+	if v.checkOnblock && blockIndex != nil {
+		onblockResult := v.validateBlocksOnblock(sliceInfo, slicePath, blockIndex, 0)
+		result.Issues = append(result.Issues, onblockResult.Issues...)
+		result.OnblockCount = onblockResult.OnblockCount
+		result.BlocksChecked = onblockResult.BlocksChecked
 	}
 
 	result.Duration = time.Since(startTime)
@@ -493,6 +574,101 @@ func (v *Validator) validateDataLog(sliceInfo SliceInfo, slicePath string, block
 	return issues
 }
 
+// Pre-computed name values for onblock detection
+var (
+	eosioNameUint64   = chain.StringToName("eosio")
+	onblockNameUint64 = chain.StringToName("onblock")
+)
+
+// OnblockResult holds the results of onblock validation
+type OnblockResult struct {
+	Issues        []ValidationIssue
+	BlocksChecked int
+	OnblockCount  int
+	MissingBlocks []uint32
+}
+
+// validateBlocksOnblock checks that each block contains an eosio::onblock action
+// Uses the shared corereader for proper block parsing
+func (v *Validator) validateBlocksOnblock(sliceInfo SliceInfo, _ string, blockIndex *BlockIndex, maxBlocks int) OnblockResult {
+	result := OnblockResult{
+		Issues:        make([]ValidationIssue, 0),
+		MissingBlocks: make([]uint32, 0),
+	}
+
+	if v.reader == nil {
+		result.Issues = append(result.Issues, ValidationIssue{
+			Severity: "ERROR",
+			Type:     "READER_ERROR",
+			SliceNum: sliceInfo.SliceNum,
+			Message:  "corereader not initialized",
+		})
+		return result
+	}
+
+	entries := blockIndex.GetAllEntries()
+
+	const batchSize = 100
+	for i := 0; i < len(entries); i += batchSize {
+		if maxBlocks > 0 && result.BlocksChecked >= maxBlocks {
+			break
+		}
+
+		batchEnd := i + batchSize
+		if batchEnd > len(entries) {
+			batchEnd = len(entries)
+		}
+		if maxBlocks > 0 && result.BlocksChecked+batchEnd-i > maxBlocks {
+			batchEnd = i + (maxBlocks - result.BlocksChecked)
+		}
+
+		startBlock := entries[i].BlockNum
+		endBlock := entries[batchEnd-1].BlockNum
+
+		blocks, err := v.reader.GetRawBlockBatch(startBlock, endBlock)
+		if err != nil {
+			if v.debug {
+				logger.Printf("debug", "Skipping blocks %d-%d: %v", startBlock, endBlock, err)
+			}
+			result.BlocksChecked += batchEnd - i
+			continue
+		}
+
+		for _, block := range blocks {
+			// Skip genesis blocks (1 and 2) - they don't have onblock actions
+			if block.BlockNum <= 2 {
+				result.BlocksChecked++
+				continue
+			}
+
+			hasOnblock := false
+			for _, action := range block.Actions {
+				if action.ContractUint64 == eosioNameUint64 && action.ActionUint64 == onblockNameUint64 {
+					hasOnblock = true
+					break
+				}
+			}
+
+			if hasOnblock {
+				result.OnblockCount++
+			} else {
+				result.MissingBlocks = append(result.MissingBlocks, block.BlockNum)
+				result.Issues = append(result.Issues, ValidationIssue{
+					Severity: "ERROR",
+					Type:     "MISSING_ONBLOCK",
+					SliceNum: sliceInfo.SliceNum,
+					BlockNum: block.BlockNum,
+					File:     "data.log",
+					Message:  fmt.Sprintf("Block %d missing eosio::onblock action", block.BlockNum),
+				})
+			}
+			result.BlocksChecked++
+		}
+	}
+
+	return result
+}
+
 // validateCrossSlice performs cross-slice validation
 func (v *Validator) validateCrossSlice(slices []SliceInfo, results []SliceValidation) error {
 	// Check for overlapping ranges
@@ -537,14 +713,19 @@ func (v *Validator) generateReport(results []SliceValidation, duration time.Dura
 	// Count statistics
 	var totalBlocks uint32
 	var totalGlobs int
+	var totalOnblocks int
+	var totalBlocksChecked int
 	finalizedCount := 0
 	activeCount := 0
 	errorCount := 0
 	warningCount := 0
+	missingOnblockCount := 0
 
 	for _, result := range results {
 		totalBlocks += result.BlocksActual
 		totalGlobs += result.GlobsActual
+		totalOnblocks += result.OnblockCount
+		totalBlocksChecked += result.BlocksChecked
 		if result.Finalized {
 			finalizedCount++
 		} else {
@@ -552,12 +733,24 @@ func (v *Validator) generateReport(results []SliceValidation, duration time.Dura
 		}
 	}
 
+	// Collect missing block numbers for pattern analysis
+	var missingBlocks []uint32
 	for _, issue := range allIssues {
-		if issue.Severity == "ERROR" {
+		switch issue.Severity {
+		case "ERROR":
 			errorCount++
-		} else if issue.Severity == "WARNING" {
+		case "WARNING":
 			warningCount++
 		}
+		if issue.Type == "MISSING_ONBLOCK" {
+			missingOnblockCount++
+			missingBlocks = append(missingBlocks, issue.BlockNum)
+		}
+	}
+
+	// Log missing onblock patterns if any
+	if len(missingBlocks) > 0 && !v.outputJSON {
+		v.logMissingOnblockPatterns(missingBlocks)
 	}
 
 	status := "passed"
@@ -581,6 +774,9 @@ func (v *Validator) generateReport(results []SliceValidation, duration time.Dura
 			ActiveSlices:    activeCount,
 			Errors:          errorCount,
 			Warnings:        warningCount,
+			MissingOnblock:  missingOnblockCount,
+			TotalOnblocks:   totalOnblocks,
+			BlocksChecked:   totalBlocksChecked,
 			DurationSeconds: duration.Seconds(),
 			ValidationRate:  validationRate,
 		},
@@ -591,11 +787,136 @@ func (v *Validator) generateReport(results []SliceValidation, duration time.Dura
 	return report
 }
 
+// logMissingOnblockPatterns analyzes and logs patterns in missing onblock blocks
+func (v *Validator) logMissingOnblockPatterns(missingBlocks []uint32) {
+	if len(missingBlocks) == 0 {
+		return
+	}
+
+	// Sort blocks for range detection
+	sort.Slice(missingBlocks, func(i, j int) bool {
+		return missingBlocks[i] < missingBlocks[j]
+	})
+
+	// Find consecutive ranges
+	type blockRange struct {
+		start, end uint32
+	}
+	var ranges []blockRange
+	rangeStart := missingBlocks[0]
+	rangeEnd := missingBlocks[0]
+
+	for i := 1; i < len(missingBlocks); i++ {
+		if missingBlocks[i] == rangeEnd+1 {
+			rangeEnd = missingBlocks[i]
+		} else {
+			ranges = append(ranges, blockRange{rangeStart, rangeEnd})
+			rangeStart = missingBlocks[i]
+			rangeEnd = missingBlocks[i]
+		}
+	}
+	ranges = append(ranges, blockRange{rangeStart, rangeEnd})
+
+	// Log the patterns
+	logger.Printf("warning", "Missing onblock pattern analysis:")
+	logger.Printf("warning", "  Total missing: %d blocks", len(missingBlocks))
+	logger.Printf("warning", "  Block ranges: %d distinct ranges", len(ranges))
+
+	// Show first few ranges
+	maxRangesToShow := 10
+	for i, r := range ranges {
+		if i >= maxRangesToShow {
+			logger.Printf("warning", "  ... and %d more ranges", len(ranges)-maxRangesToShow)
+			break
+		}
+		if r.start == r.end {
+			sliceNum := (r.start - 1) / 10000
+			logger.Printf("warning", "  Block %d (slice %d)", r.start, sliceNum)
+		} else {
+			startSlice := (r.start - 1) / 10000
+			endSlice := (r.end - 1) / 10000
+			if startSlice == endSlice {
+				logger.Printf("warning", "  Blocks %d-%d (%d blocks, slice %d)", r.start, r.end, r.end-r.start+1, startSlice)
+			} else {
+				logger.Printf("warning", "  Blocks %d-%d (%d blocks, slices %d-%d)", r.start, r.end, r.end-r.start+1, startSlice, endSlice)
+			}
+		}
+	}
+
+	// Check for slice-level patterns (which slices have the most missing)
+	sliceCounts := make(map[uint32]int)
+	for _, block := range missingBlocks {
+		sliceNum := (block - 1) / 10000
+		sliceCounts[sliceNum]++
+	}
+
+	if len(sliceCounts) > 1 {
+		logger.Printf("warning", "  Affected slices: %d", len(sliceCounts))
+
+		// Sort slices by count for reporting
+		type sliceCount struct {
+			sliceNum uint32
+			count    int
+		}
+		var counts []sliceCount
+		for s, c := range sliceCounts {
+			counts = append(counts, sliceCount{s, c})
+		}
+		sort.Slice(counts, func(i, j int) bool {
+			return counts[i].count > counts[j].count
+		})
+
+		// Show top affected slices
+		maxSlicesToShow := 5
+		for i, sc := range counts {
+			if i >= maxSlicesToShow {
+				break
+			}
+			logger.Printf("warning", "    Slice %d: %d missing blocks", sc.sliceNum, sc.count)
+		}
+	}
+}
+
 // addIssue adds a validation issue (thread-safe)
 func (v *Validator) addIssue(issue ValidationIssue) {
 	v.issuesMu.Lock()
 	defer v.issuesMu.Unlock()
 	v.issues = append(v.issues, issue)
+}
+
+// formatBlockList formats a sorted list of block numbers compactly
+// Uses ranges for consecutive blocks: "100-105, 200, 300-302"
+func formatBlockList(blocks []uint32) string {
+	if len(blocks) == 0 {
+		return ""
+	}
+	if len(blocks) == 1 {
+		return fmt.Sprintf("%d", blocks[0])
+	}
+
+	var parts []string
+	rangeStart := blocks[0]
+	rangeEnd := blocks[0]
+
+	for i := 1; i < len(blocks); i++ {
+		if blocks[i] == rangeEnd+1 {
+			rangeEnd = blocks[i]
+		} else {
+			parts = append(parts, formatRange(rangeStart, rangeEnd))
+			rangeStart = blocks[i]
+			rangeEnd = blocks[i]
+		}
+	}
+	parts = append(parts, formatRange(rangeStart, rangeEnd))
+
+	return fmt.Sprintf("%s (%d blocks)", strings.Join(parts, ", "), len(blocks))
+}
+
+func formatRange(start, end uint32) string {
+	if start == end {
+		return fmt.Sprintf("%d", start)
+	}
+	return fmt.Sprintf("%d-%d", start, end)
 }
 
 // PrintReport prints the validation report
@@ -606,66 +927,94 @@ func (v *Validator) PrintReport(report *ValidationReport) {
 		return
 	}
 
-	fmt.Printf("\n")
-
 	// Print status
 	if report.Status == "passed" {
-		fmt.Printf("✅ VALIDATION PASSED\n\n")
+		logger.Printf("result", "VALIDATION PASSED")
 	} else {
-		fmt.Printf("❌ VALIDATION FAILED - %d errors, %d warnings\n\n", report.Summary.Errors, report.Summary.Warnings)
+		logger.Printf("result", "VALIDATION FAILED - %d errors, %d warnings", report.Summary.Errors, report.Summary.Warnings)
 	}
 
 	// Print issues
 	if len(report.Issues) > 0 {
-		// Group by severity
-		errors := make([]ValidationIssue, 0)
-		warnings := make([]ValidationIssue, 0)
+		// Group missing onblock by slice, keep other errors separate
+		missingOnblockBySlice := make(map[uint32][]uint32)
+		var otherErrors []ValidationIssue
+		var warnings []ValidationIssue
 
 		for _, issue := range report.Issues {
-			if issue.Severity == "ERROR" {
-				errors = append(errors, issue)
-			} else if issue.Severity == "WARNING" {
+			switch issue.Severity {
+			case "ERROR":
+				if issue.Type == "MISSING_ONBLOCK" {
+					missingOnblockBySlice[issue.SliceNum] = append(missingOnblockBySlice[issue.SliceNum], issue.BlockNum)
+				} else {
+					otherErrors = append(otherErrors, issue)
+				}
+			case "WARNING":
 				warnings = append(warnings, issue)
 			}
 		}
 
-		// Print errors
-		if len(errors) > 0 {
-			for _, issue := range errors {
-				fmt.Printf("ERROR: Slice %d - %s\n", issue.SliceNum, issue.Message)
-				if issue.File != "" {
-					fmt.Printf("  File: %s\n", issue.File)
-				}
-				if issue.BlockNum > 0 {
-					fmt.Printf("  Block: %d\n", issue.BlockNum)
-				}
-				fmt.Printf("\n")
+		// Print missing onblock errors grouped by slice
+		if len(missingOnblockBySlice) > 0 {
+			// Sort slice numbers for consistent output
+			var sliceNums []uint32
+			for sliceNum := range missingOnblockBySlice {
+				sliceNums = append(sliceNums, sliceNum)
+			}
+			sort.Slice(sliceNums, func(i, j int) bool { return sliceNums[i] < sliceNums[j] })
+
+			for _, sliceNum := range sliceNums {
+				blocks := missingOnblockBySlice[sliceNum]
+				sort.Slice(blocks, func(i, j int) bool { return blocks[i] < blocks[j] })
+				logger.Printf("error", "Slice %d missing onblock: %s", sliceNum, formatBlockList(blocks))
+			}
+		}
+
+		// Print other errors
+		for _, issue := range otherErrors {
+			if issue.BlockNum > 0 {
+				logger.Printf("error", "Slice %d Block %d - %s", issue.SliceNum, issue.BlockNum, issue.Message)
+			} else {
+				logger.Printf("error", "Slice %d - %s", issue.SliceNum, issue.Message)
 			}
 		}
 
 		// Print warnings
-		if len(warnings) > 0 {
-			for _, issue := range warnings {
-				fmt.Printf("WARNING: Slice %d - %s\n", issue.SliceNum, issue.Message)
-				if issue.File != "" {
-					fmt.Printf("  File: %s\n", issue.File)
-				}
-				fmt.Printf("\n")
-			}
+		for _, issue := range warnings {
+			logger.Printf("warning", "Slice %d - %s", issue.SliceNum, issue.Message)
 		}
 	}
 
 	// Print summary
-	fmt.Printf("Summary:\n")
-	fmt.Printf("  Total Slices:       %d\n", report.Summary.TotalSlices)
-	fmt.Printf("  Total Blocks:       %d\n", report.Summary.TotalBlocks)
-	fmt.Printf("  Total Glob Entries: %d\n", report.Summary.TotalGlobs)
-	fmt.Printf("  Finalized Slices:   %d\n", report.Summary.FinalizedSlices)
-	fmt.Printf("  Active Slices:      %d\n", report.Summary.ActiveSlices)
-	if report.Summary.Errors > 0 || report.Summary.Warnings > 0 {
-		fmt.Printf("  Errors:             %d\n", report.Summary.Errors)
-		fmt.Printf("  Warnings:           %d\n", report.Summary.Warnings)
+	// Derive block range from slice results
+	var firstBlock, lastBlock uint32
+	if len(report.SliceResults) > 0 {
+		firstBlock = report.SliceResults[0].StartBlock
+		lastBlock = report.SliceResults[len(report.SliceResults)-1].EndBlock
 	}
-	fmt.Printf("  Duration:           %.2fs\n", report.Summary.DurationSeconds)
-	fmt.Printf("  Validation Rate:    %.0f slices/sec\n", report.Summary.ValidationRate)
+
+	// Storage overview
+	logger.Printf("summary", "Blocks: %d-%d (%d total across %d slices)",
+		firstBlock, lastBlock, report.Summary.TotalBlocks, report.Summary.TotalSlices)
+
+	if report.Summary.ActiveSlices > 0 {
+		logger.Printf("summary", "Slices: %d finalized, %d active",
+			report.Summary.FinalizedSlices, report.Summary.ActiveSlices)
+	}
+
+	// Onblock validation results (only when --check-onblock used)
+	if report.Summary.BlocksChecked > 0 {
+		if report.Summary.MissingOnblock > 0 {
+			pct := float64(report.Summary.TotalOnblocks) / float64(report.Summary.BlocksChecked) * 100
+			logger.Printf("summary", "Onblock: %d/%d blocks (%.1f%%), %d missing",
+				report.Summary.TotalOnblocks, report.Summary.BlocksChecked, pct, report.Summary.MissingOnblock)
+		} else {
+			logger.Printf("summary", "Onblock: %d/%d blocks verified",
+				report.Summary.TotalOnblocks, report.Summary.BlocksChecked)
+		}
+	}
+
+	// Performance
+	blocksPerSec := float64(report.Summary.TotalBlocks) / report.Summary.DurationSeconds
+	logger.Printf("summary", "Duration: %.2fs (%.0f blocks/sec)", report.Summary.DurationSeconds, blocksPerSec)
 }
