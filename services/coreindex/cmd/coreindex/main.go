@@ -2309,14 +2309,11 @@ func main() {
 	// Continuous sync loop - similar to historydata's pattern
 	// Check for new blocks every 500ms (EOS block interval)
 	syncWaitStart := time.Now()
-	replayModeDetected := false             // Track if we've seen replay mode
-	liveSyncAnnounced := false              // Track if we've announced live sync mode
+	liveSyncAnnounced := false // Track if we've announced live sync mode
 	monitoringModeAnnounced := false        // Track if we've announced monitoring mode
 	lastMonitoringLog := time.Time{}        // Track last monitoring heartbeat
 	lastStoreAheadLog := time.Time{}        // Track last "store ahead" warning
 	lastMediumBatchLog := time.Time{}       // Track last medium batch log (rate limit)
-	const replaySafetyMargin = uint32(1000) // Stay 1000 blocks behind HEAD during replay
-
 	// Periodic slice cache save (every 60 seconds if slice count changed)
 	lastSavedSliceCount := len(store.GetSliceInfos())
 	go func() {
@@ -2367,38 +2364,11 @@ func main() {
 
 		// Determine sync target based on nodeos state
 		var syncTarget uint32
-		var replayMode bool
 
 		if info.Lib == 0 && info.Head > 0 {
-			// Nodeos is replaying - LIB not tracking yet, but blocks are being written
-			replayMode = true
-			if !replayModeDetected {
-				logger.Printf("sync", "Nodeos appears to be replaying (LIB=0, HEAD=%d)", info.Head)
-				logger.Printf("sync", "Replay mode: will sync to HEAD-%d with safety margin", replaySafetyMargin)
-				logger.Printf("sync", "Will switch to LIB tracking once nodeos finishes replay")
-				replayModeDetected = true
-			}
-
-			if info.Head > replaySafetyMargin {
-				syncTarget = info.Head - replaySafetyMargin
-			} else {
-				// Not enough blocks yet - wait
-				if info.Head%1000 == 0 { // Log every 1000 blocks to avoid spam
-					logger.Printf("sync", "Nodeos replaying: HEAD=%d (waiting for >%d blocks)", info.Head, replaySafetyMargin)
-				}
-				continue
-			}
+			continue
 		} else if info.Lib > 0 {
-			// Normal operation - LIB is tracking
-			replayMode = false
 			syncTarget = info.Lib
-
-			// Detect transition from replay to normal mode
-			if replayModeDetected {
-				logger.Printf("sync", "Nodeos replay complete - LIB is now tracking (LIB=%d, HEAD=%d)", info.Lib, info.Head)
-				logger.Printf("sync", "Switching to normal LIB-based sync mode")
-				replayModeDetected = false
-			}
 		} else {
 			// LIB=0 and HEAD=0 - no blocks available yet
 			if myLIB == 0 {
@@ -2449,14 +2419,7 @@ func main() {
 					myLIB+1, syncTarget, blocksToSync, bytesStr, actions, txns, globMax)
 				lastMediumBatchLog = time.Now()
 			} else if shouldLogSync {
-				if replayMode {
-					logger.Printf("sync", "Syncing blocks from trace files (replay mode): %d to %d (%d blocks behind HEAD-%d)",
-						myLIB+1, syncTarget, blocksToSync, replaySafetyMargin)
-					logger.Println("sync", "Syncing with background glob index building (replay mode)")
-				} else {
-					logger.Printf("sync", "Syncing blocks from trace files: %d to %d (%d blocks behind)", myLIB+1, syncTarget, blocksToSync)
-					logger.Println("sync", "Syncing with background glob index building")
-				}
+				logger.Printf("sync", "Syncing blocks from trace files: %d to %d (%d blocks behind)", myLIB+1, syncTarget, blocksToSync)
 			}
 
 			// Create broadcast callback if streaming is enabled
@@ -2477,12 +2440,7 @@ func main() {
 				logger.Println("validation", "Reactive validation complete, will restart sync from repaired position")
 			}
 
-			// Only log completion for batches we logged the start for, or during shutdown
-			if !exit {
-				if syncErr == nil && shouldLogSync {
-					logger.Println("sync", "Sync complete, monitoring for new blocks...")
-				}
-			} else {
+			if exit {
 				logger.Println("debug-shutdown", "Sync interrupted by exit signal")
 			}
 
