@@ -1330,7 +1330,7 @@ func (sr *SliceReader) reportAndResetCacheStats() {
 
 	hitRate := float64(hits) / float64(total) * 100.0
 
-	logger.Printf("stats", "SliceReader cache: %d hits, %d misses (%.1f%% hit rate) over %ds",
+	logger.Printf("debug-stats", "SliceReader cache: %d hits, %d misses (%.1f%% hit rate) over %ds",
 		hits, misses, hitRate, sr.statsReportInterval)
 
 	if sr.blockCache != nil {
@@ -1338,7 +1338,7 @@ func (sr *SliceReader) reportAndResetCacheStats() {
 		bcTotal := bcHits + bcMisses
 		if bcTotal > 0 {
 			bcHitRate := float64(bcHits) / float64(bcTotal) * 100.0
-			logger.Printf("stats", "BlockCache: %d hits, %d misses (%.1f%% hit rate), %d blocks, %.1f MB",
+			logger.Printf("debug-stats", "BlockCache: %d hits, %d misses (%.1f%% hit rate), %d blocks, %.1f MB",
 				bcHits, bcMisses, bcHitRate, bcBlocks, float64(bcSize)/(1024*1024))
 		}
 	}
