@@ -39,11 +39,12 @@ type RawBlock struct {
 // Action represents a canonically-deduplicated action for a specific account.
 // This is the output of canonical filtering - one Action per (account, globalSeq) pair.
 type Action struct {
-	Account   uint64
-	Contract  uint64
-	Action    uint64
-	GlobalSeq uint64
-	TrxIndex  uint32
+	Account      uint64
+	Contract     uint64
+	Action       uint64
+	GlobalSeq    uint64
+	TrxIndex     uint32
+	IsAuthorizer bool
 }
 
 // ContractExecution represents a contract execution (receiver == contract).

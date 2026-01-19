@@ -305,12 +305,23 @@ func filterBlockInto(bf *blockFilter, notif RawBlock, actionFilter ActionFilterF
 			}
 
 			if info.Receiver == account {
+				authIdxs := info.Action.AuthAccountIndexes
+				isAuth := len(authIdxs) > 0 && notif.NamesInBlock[authIdxs[0]] == account
+				if !isAuth && len(authIdxs) > 1 {
+					for _, authIdx := range authIdxs[1:] {
+						if notif.NamesInBlock[authIdx] == account {
+							isAuth = true
+							break
+						}
+					}
+				}
 				actionsBuf = append(actionsBuf, Action{
-					Account:   account,
-					Contract:  info.Meta.Contract,
-					Action:    info.Meta.Action,
-					GlobalSeq: globalSeq,
-					TrxIndex:  info.TrxIndex,
+					Account:      account,
+					Contract:     info.Meta.Contract,
+					Action:       info.Meta.Action,
+					GlobalSeq:    globalSeq,
+					TrxIndex:     info.TrxIndex,
+					IsAuthorizer: isAuth,
 				})
 				if minSeq == 0 || globalSeq < minSeq {
 					minSeq = globalSeq
@@ -321,11 +332,14 @@ func filterBlockInto(bf *blockFilter, notif RawBlock, actionFilter ActionFilterF
 				continue
 			}
 
-			isAuthorizer := false
-			for _, authIdx := range info.Action.AuthAccountIndexes {
-				if notif.NamesInBlock[authIdx] == account {
-					isAuthorizer = true
-					break
+			authIdxs := info.Action.AuthAccountIndexes
+			isAuthorizer := len(authIdxs) > 0 && notif.NamesInBlock[authIdxs[0]] == account
+			if !isAuthorizer && len(authIdxs) > 1 {
+				for _, authIdx := range authIdxs[1:] {
+					if notif.NamesInBlock[authIdx] == account {
+						isAuthorizer = true
+						break
+					}
 				}
 			}
 
@@ -357,11 +371,12 @@ func filterBlockInto(bf *blockFilter, notif RawBlock, actionFilter ActionFilterF
 			}
 
 			actionsBuf = append(actionsBuf, Action{
-				Account:   account,
-				Contract:  info.Meta.Contract,
-				Action:    info.Meta.Action,
-				GlobalSeq: globalSeq,
-				TrxIndex:  info.TrxIndex,
+				Account:      account,
+				Contract:     info.Meta.Contract,
+				Action:       info.Meta.Action,
+				GlobalSeq:    globalSeq,
+				TrxIndex:     info.TrxIndex,
+				IsAuthorizer: true,
 			})
 			if minSeq == 0 || globalSeq < minSeq {
 				minSeq = globalSeq
@@ -472,12 +487,23 @@ func filterBlockIntoTimed(bf *blockFilter, notif RawBlock, actionFilter ActionFi
 			}
 
 			if info.Receiver == account {
+				authIdxs := info.Action.AuthAccountIndexes
+				isAuth := len(authIdxs) > 0 && notif.NamesInBlock[authIdxs[0]] == account
+				if !isAuth && len(authIdxs) > 1 {
+					for _, authIdx := range authIdxs[1:] {
+						if notif.NamesInBlock[authIdx] == account {
+							isAuth = true
+							break
+						}
+					}
+				}
 				actionsBuf = append(actionsBuf, Action{
-					Account:   account,
-					Contract:  info.Meta.Contract,
-					Action:    info.Meta.Action,
-					GlobalSeq: globalSeq,
-					TrxIndex:  info.TrxIndex,
+					Account:      account,
+					Contract:     info.Meta.Contract,
+					Action:       info.Meta.Action,
+					GlobalSeq:    globalSeq,
+					TrxIndex:     info.TrxIndex,
+					IsAuthorizer: isAuth,
 				})
 				if minSeq == 0 || globalSeq < minSeq {
 					minSeq = globalSeq
@@ -489,11 +515,14 @@ func filterBlockIntoTimed(bf *blockFilter, notif RawBlock, actionFilter ActionFi
 				continue
 			}
 
-			isAuthorizer := false
-			for _, authIdx := range info.Action.AuthAccountIndexes {
-				if notif.NamesInBlock[authIdx] == account {
-					isAuthorizer = true
-					break
+			authIdxs := info.Action.AuthAccountIndexes
+			isAuthorizer := len(authIdxs) > 0 && notif.NamesInBlock[authIdxs[0]] == account
+			if !isAuthorizer && len(authIdxs) > 1 {
+				for _, authIdx := range authIdxs[1:] {
+					if notif.NamesInBlock[authIdx] == account {
+						isAuthorizer = true
+						break
+					}
 				}
 			}
 
@@ -527,11 +556,12 @@ func filterBlockIntoTimed(bf *blockFilter, notif RawBlock, actionFilter ActionFi
 			}
 
 			actionsBuf = append(actionsBuf, Action{
-				Account:   account,
-				Contract:  info.Meta.Contract,
-				Action:    info.Meta.Action,
-				GlobalSeq: globalSeq,
-				TrxIndex:  info.TrxIndex,
+				Account:      account,
+				Contract:     info.Meta.Contract,
+				Action:       info.Meta.Action,
+				GlobalSeq:    globalSeq,
+				TrxIndex:     info.TrxIndex,
+				IsAuthorizer: true,
 			})
 			if minSeq == 0 || globalSeq < minSeq {
 				minSeq = globalSeq
