@@ -6,8 +6,8 @@ require (
 	github.com/RoaringBitmap/roaring v1.9.4
 	github.com/cockroachdb/pebble/v2 v2.1.3
 	github.com/greymass/roborovski/libraries/abicache v0.0.0
-	github.com/greymass/roborovski/libraries/corereader v0.0.0
 	github.com/greymass/roborovski/libraries/chain v0.0.0
+	github.com/greymass/roborovski/libraries/corereader v0.0.0
 	github.com/greymass/roborovski/libraries/encoding v0.0.0
 	github.com/greymass/roborovski/libraries/openapi v0.0.0
 	github.com/greymass/roborovski/libraries/server v0.0.0
@@ -28,8 +28,8 @@ require (
 	github.com/cockroachdb/tokenbucket v0.0.0-20230807174530-cc333fc44b06 // indirect
 	github.com/getsentry/sentry-go v0.27.0 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
-	github.com/golang/snappy v0.0.4 // indirect
-	github.com/greymass/go-eosio v0.2.3 // indirect
+	github.com/golang/snappy v0.0.5-0.20231225225746-43d5d4cd4e0e // indirect
+	github.com/greymass/go-eosio v0.2.6 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/compress v1.18.1 // indirect
 	github.com/kr/pretty v0.3.1 // indirect
@@ -57,8 +57,8 @@ require (
 
 replace (
 	github.com/greymass/roborovski/libraries/abicache => ../../libraries/abicache
-	github.com/greymass/roborovski/libraries/corereader => ../../libraries/corereader
 	github.com/greymass/roborovski/libraries/chain => ../../libraries/chain
+	github.com/greymass/roborovski/libraries/corereader => ../../libraries/corereader
 	github.com/greymass/roborovski/libraries/encoding => ../../libraries/encoding
 	github.com/greymass/roborovski/libraries/openapi => ../../libraries/openapi
 	github.com/greymass/roborovski/libraries/server => ../../libraries/server

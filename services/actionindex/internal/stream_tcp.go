@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -48,6 +49,7 @@ func (ts *StreamTCPServer) Listen(address string) error {
 	var err error
 
 	if strings.HasSuffix(address, ".sock") {
+		os.Remove(address)
 		listener, err = net.Listen("unix", address)
 	} else {
 		listener, err = net.Listen("tcp", address)
