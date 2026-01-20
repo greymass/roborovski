@@ -179,8 +179,17 @@ func HandleAccountActivity(
 		sliceStart = time.Now()
 	}
 	selectedSeqs := globalSeqs
+
+	// If we used a cursor with flipped order (backwards navigation), reverse results
+	// to match the originally requested order
+	if cursor != nil && cursor.Order != req.Order {
+		for i, j := 0, len(selectedSeqs)-1; i < j; i, j = i+1, j-1 {
+			selectedSeqs[i], selectedSeqs[j] = selectedSeqs[j], selectedSeqs[i]
+		}
+	}
+
 	if trace.Enabled() {
-		trace.AddStepWithCount("slice", "paginate", time.Since(sliceStart), len(selectedSeqs), fmt.Sprintf("order=%s", order))
+		trace.AddStepWithCount("slice", "paginate", time.Since(sliceStart), len(selectedSeqs), fmt.Sprintf("order=%s", req.Order))
 	}
 
 	var effectiveAbiReader *abicache.Reader
@@ -227,11 +236,15 @@ func HandleAccountActivity(
 		Results: results,
 	}
 
+	// Results are now always in req.Order (reversed if needed above)
+	// Generate cursors based on req.Order, not the cursor's query order
+	reqDescending := req.Order == "desc"
+
 	if len(results) > 0 && len(results) == limit {
 		lastSeq := selectedSeqs[len(selectedSeqs)-1]
 		nextCursor := &ActivityCursor{
 			GlobalSeq:        lastSeq,
-			Order:            order,
+			Order:            req.Order,
 			QueryFingerprint: queryFingerprint,
 		}
 		response.NextCursor = encodeActivityCursor(nextCursor)
@@ -239,16 +252,34 @@ func HandleAccountActivity(
 
 	if cursor != nil && len(results) > 0 {
 		firstSeq := selectedSeqs[0]
-		prevOrder := "asc"
-		if order == "asc" {
-			prevOrder = "desc"
+
+		// Check if we're at the first page based on req.Order.
+		// Results are already in req.Order, so:
+		// - For desc: firstSeq is highest, check for even higher seqs (ascending query)
+		// - For asc: firstSeq is lowest, check for even lower seqs (descending query)
+		boundarySeq := firstSeq
+		checkDescForBoundary := !reqDescending
+
+		var hasPrev bool
+		if dateRange != nil {
+			prevSeqs, _ := indexes.LoadActionsFromCursorWithDateRange(account, req.Contract, req.Action, boundarySeq, dateRange, 1, checkDescForBoundary, trace)
+			hasPrev = len(prevSeqs) > 0
+		} else {
+			prevSeqs, _ := indexes.LoadActionsFromCursor(account, req.Contract, req.Action, boundarySeq, 1, checkDescForBoundary, trace)
+			hasPrev = len(prevSeqs) > 0
 		}
-		prevCursor := &ActivityCursor{
-			GlobalSeq:        firstSeq,
-			Order:            prevOrder,
-			QueryFingerprint: queryFingerprint,
+		if hasPrev {
+			prevOrder := "asc"
+			if req.Order == "asc" {
+				prevOrder = "desc"
+			}
+			prevCursor := &ActivityCursor{
+				GlobalSeq:        firstSeq,
+				Order:            prevOrder,
+				QueryFingerprint: queryFingerprint,
+			}
+			response.PrevCursor = encodeActivityCursor(prevCursor)
 		}
-		response.PrevCursor = encodeActivityCursor(prevCursor)
 	}
 
 	indexUsed := "AllActions"
