@@ -843,8 +843,12 @@ func (r *ChunkReader) GetWithSeqRange(account uint64, minSeq, maxSeq uint64, lim
 			}
 		}
 		_, baseSeq, ok := parseAccountActionsKey(iter.Key())
-		if ok && baseSeq > minSeq && iter.Prev() {
-			_, baseSeq, _ = parseAccountActionsKey(iter.Key())
+		if ok && baseSeq > minSeq {
+			// Try to go back to previous chunk that might contain minSeq
+			if !iter.Prev() || !iter.Valid() {
+				// No previous chunk, go back to first
+				iter.First()
+			}
 		} else if !ok {
 			iter.First()
 		}
@@ -897,6 +901,90 @@ func (r *ChunkReader) GetWithSeqRange(account uint64, minSeq, maxSeq uint64, lim
 	}
 
 	return seqs, iter.Error()
+}
+
+// StreamWithSeqRange iterates through sequences in the range and calls the callback for each.
+// This avoids collecting all sequences in memory before processing.
+func (r *ChunkReader) StreamWithSeqRange(account uint64, minSeq, maxSeq uint64, callback func(seq uint64) error) error {
+	prefix := makeAccountActionsPrefix(account)
+	upperBound := incrementPrefix(prefix)
+
+	iter, err := r.db.NewIter(&pebble.IterOptions{
+		LowerBound: prefix,
+		UpperBound: upperBound,
+	})
+	if err != nil {
+		return err
+	}
+	defer iter.Close()
+
+	// Ascending order iteration
+	seekKey := makeAccountActionsKey(account, minSeq)
+	if !iter.SeekGE(seekKey) {
+		if !iter.First() {
+			// No data, check WAL
+			return r.streamWALSeqs(account, minSeq, maxSeq, callback)
+		}
+	}
+
+	_, baseSeq, ok := parseAccountActionsKey(iter.Key())
+	if ok && baseSeq > minSeq {
+		if !iter.Prev() || !iter.Valid() {
+			iter.First()
+		}
+	} else if !ok {
+		iter.First()
+	}
+
+	for iter.Valid() {
+		_, baseSeq, ok := parseAccountActionsKey(iter.Key())
+		if !ok {
+			iter.Next()
+			continue
+		}
+		chunk, err := DecodeLeanChunk(baseSeq, iter.Value())
+		if err != nil {
+			iter.Next()
+			continue
+		}
+		if chunk.BaseSeq > maxSeq {
+			break
+		}
+		for _, seq := range chunk.Seqs {
+			if seq > maxSeq {
+				break
+			}
+			if seq >= minSeq {
+				if err := callback(seq); err != nil {
+					return err
+				}
+			}
+		}
+		iter.Next()
+	}
+
+	// Also stream WAL entries
+	return r.streamWALSeqs(account, minSeq, maxSeq, callback)
+}
+
+func (r *ChunkReader) streamWALSeqs(account uint64, minSeq, maxSeq uint64, callback func(seq uint64) error) error {
+	if r.walReader == nil {
+		return nil
+	}
+
+	walSeqs, err := r.walReader.GetEntriesForAccount(account)
+	if err != nil || len(walSeqs) == 0 {
+		return nil
+	}
+
+	for _, seq := range walSeqs {
+		if seq >= minSeq && seq <= maxSeq {
+			if err := callback(seq); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (r *ChunkReader) GetContractActionWithSeqRange(account, contract, action uint64, minSeq, maxSeq uint64, limit int, descending bool) ([]uint64, error) {
@@ -962,8 +1050,10 @@ func (r *ChunkReader) GetContractActionWithSeqRange(account, contract, action ui
 			}
 		}
 		_, _, _, baseSeq, ok := parseContractActionKey(iter.Key())
-		if ok && baseSeq > minSeq && iter.Prev() {
-			_, _, _, baseSeq, _ = parseContractActionKey(iter.Key())
+		if ok && baseSeq > minSeq {
+			if !iter.Prev() || !iter.Valid() {
+				iter.First()
+			}
 		} else if !ok {
 			iter.First()
 		}

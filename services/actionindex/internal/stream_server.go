@@ -3,6 +3,7 @@ package internal
 import (
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/greymass/roborovski/libraries/abicache"
 	"github.com/greymass/roborovski/libraries/corereader"
@@ -65,6 +66,75 @@ func (s *StreamServer) StartWebSocket(address string) error {
 
 func (s *StreamServer) GetHeartbeatInterval() int {
 	return s.heartbeatInterval
+}
+
+func (s *StreamServer) StartStatsLogger(interval time.Duration) {
+	s.wg.Add(1)
+	go s.statsLoop(interval)
+}
+
+func (s *StreamServer) statsLoop(interval time.Duration) {
+	defer s.wg.Done()
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	var lastTotal uint64
+
+	for {
+		select {
+		case <-s.closeChan:
+			return
+		case <-ticker.C:
+			tcpClients, tcpActions := s.getTCPStats()
+			wsClients, wsActions := s.getWSStats()
+
+			totalClients := tcpClients + wsClients
+			totalActions := tcpActions + wsActions
+
+			if totalClients > 0 {
+				rate := totalActions - lastTotal
+				logger.Printf("stream", "Active streams: %d clients (tcp=%d, ws=%d), %d actions sent (+%d since last)",
+					totalClients, tcpClients, wsClients, totalActions, rate)
+			}
+
+			lastTotal = totalActions
+		}
+	}
+}
+
+func (s *StreamServer) getTCPStats() (clients int, actionsSent uint64) {
+	if s.tcpServer == nil {
+		return 0, 0
+	}
+
+	s.tcpServer.clientsMu.RLock()
+	defer s.tcpServer.clientsMu.RUnlock()
+
+	for _, tc := range s.tcpServer.clients {
+		clients++
+		sent, _ := tc.client.Stats()
+		actionsSent += sent
+	}
+
+	return clients, actionsSent
+}
+
+func (s *StreamServer) getWSStats() (clients int, actionsSent uint64) {
+	if s.wsServer == nil {
+		return 0, 0
+	}
+
+	s.wsServer.clientsMu.RLock()
+	defer s.wsServer.clientsMu.RUnlock()
+
+	for _, wc := range s.wsServer.clients {
+		clients++
+		sent, _ := wc.client.Stats()
+		actionsSent += sent
+	}
+
+	return clients, actionsSent
 }
 
 func (s *StreamServer) Close() error {

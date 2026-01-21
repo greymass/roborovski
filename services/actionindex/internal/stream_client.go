@@ -39,7 +39,9 @@ func (c *StreamClient) Run(ctx context.Context, sendAction func(StreamedAction) 
 	defer c.server.broadcaster.Unsubscribe(sub.id)
 
 	headSeq, _ := c.server.broadcaster.GetState()
-	needsCatchup := c.startSeq > 0 && c.startSeq < headSeq
+	needsCatchup := c.startSeq < headSeq
+
+	logger.Printf("stream", "Client %d: startSeq=%d, headSeq=%d, needsCatchup=%v", c.id, c.startSeq, headSeq, needsCatchup)
 
 	if needsCatchup {
 		logger.Printf("stream", "Client %d starting catchup from seq %d to %d", c.id, c.startSeq, headSeq)

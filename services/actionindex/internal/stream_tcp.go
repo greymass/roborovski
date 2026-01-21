@@ -139,6 +139,11 @@ func (ts *StreamTCPServer) handleConnection(conn net.Conn) {
 
 	logger.Printf("stream", "TCP client %d connected (%d/%d)", clientID, connCount, ts.maxConns)
 
+	head, lib := ts.server.broadcaster.GetState()
+	if err := ts.sendHeartbeat(conn, head, lib); err != nil {
+		return
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -208,24 +213,37 @@ func (ts *StreamTCPServer) decodeSubscribe(payload []byte) (ActionFilter, uint64
 	contractCount := binary.LittleEndian.Uint16(payload[8:10])
 	receiverCount := binary.LittleEndian.Uint16(payload[10:12])
 
-	minLen := 12 + int(contractCount)*8 + int(receiverCount)*8
-	minLenWithFlags := 13 + int(contractCount)*8 + int(receiverCount)*8
-
-	if len(payload) < minLen {
-		return ActionFilter{}, 0, false, errors.New("subscribe message truncated")
-	}
-
-	decode := true
-	offset := 12
-	if len(payload) >= minLenWithFlags {
-		flags := payload[12]
-		decode = (flags & 0x01) != 0
-		offset = 13
-	}
+	oldMinLen := 12 + int(contractCount)*8 + int(receiverCount)*8
+	oldMinLenWithFlags := 13 + int(contractCount)*8 + int(receiverCount)*8
 
 	filter := ActionFilter{
 		Contracts: make(map[uint64]struct{}),
 		Receivers: make(map[uint64]struct{}),
+		Actions:   make(map[uint64]struct{}),
+	}
+
+	var actionCount uint16
+	decode := true
+	offset := 12
+
+	if len(payload) >= 14 {
+		actionCount = binary.LittleEndian.Uint16(payload[12:14])
+		newMinLen := 15 + int(contractCount)*8 + int(receiverCount)*8 + int(actionCount)*8
+
+		if len(payload) >= newMinLen {
+			flags := payload[14]
+			decode = (flags & 0x01) != 0
+			offset = 15
+		} else if len(payload) >= oldMinLenWithFlags {
+			actionCount = 0
+			flags := payload[12]
+			decode = (flags & 0x01) != 0
+			offset = 13
+		} else if len(payload) < oldMinLen {
+			return ActionFilter{}, 0, false, errors.New("subscribe message truncated")
+		}
+	} else if len(payload) < oldMinLen {
+		return ActionFilter{}, 0, false, errors.New("subscribe message truncated")
 	}
 
 	for range contractCount {
@@ -237,6 +255,12 @@ func (ts *StreamTCPServer) decodeSubscribe(payload []byte) (ActionFilter, uint64
 	for range receiverCount {
 		receiver := binary.LittleEndian.Uint64(payload[offset : offset+8])
 		filter.Receivers[receiver] = struct{}{}
+		offset += 8
+	}
+
+	for range actionCount {
+		action := binary.LittleEndian.Uint64(payload[offset : offset+8])
+		filter.Actions[action] = struct{}{}
 		offset += 8
 	}
 
@@ -260,6 +284,13 @@ func (ts *StreamTCPServer) sendAction(conn net.Conn, action StreamedAction, deco
 	}
 
 	return ts.writeMessage(conn, msgType, payload)
+}
+
+func (ts *StreamTCPServer) sendHeartbeat(conn net.Conn, headSeq, libSeq uint64) error {
+	payload := make([]byte, 16)
+	binary.LittleEndian.PutUint64(payload[0:8], headSeq)
+	binary.LittleEndian.PutUint64(payload[8:16], libSeq)
+	return ts.writeMessage(conn, MsgTypeActionHeartbeat, payload)
 }
 
 func (ts *StreamTCPServer) sendCatchupComplete(conn net.Conn, headSeq, libSeq uint64) error {

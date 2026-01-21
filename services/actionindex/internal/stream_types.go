@@ -8,6 +8,7 @@ import (
 type ActionFilter struct {
 	Contracts map[uint64]struct{}
 	Receivers map[uint64]struct{}
+	Actions   map[uint64]struct{}
 }
 
 func (f *ActionFilter) Matches(action StreamedAction) bool {
@@ -18,6 +19,15 @@ func (f *ActionFilter) Matches(action StreamedAction) bool {
 	contractMatch := len(f.Contracts) == 0
 	if !contractMatch {
 		_, contractMatch = f.Contracts[action.Contract]
+	}
+
+	actionMatch := len(f.Actions) == 0
+	if !actionMatch {
+		_, actionMatch = f.Actions[action.Action]
+	}
+
+	if !actionMatch {
+		return false
 	}
 
 	if len(f.Receivers) == 0 {

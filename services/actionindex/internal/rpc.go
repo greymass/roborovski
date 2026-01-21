@@ -66,6 +66,9 @@ func buildAction(act chain.Action, abiReader *abicache.Reader, blockNum uint32, 
 			}
 			result["data"] = decoded
 		} else {
+			if err != nil {
+				logger.Printf("debug-abi", "decode failed for %s::%s at block %d: %v", act.Account, act.Name, blockNum, err)
+			}
 			result["data"] = act.Data
 		}
 	} else {

@@ -20,11 +20,13 @@ var (
 )
 
 const (
-	MsgTypeActionSubscribe uint8 = 0x30
-	MsgTypeActionAck       uint8 = 0x31
-	MsgTypeActionBatch     uint8 = 0x32
-	MsgTypeActionHeartbeat uint8 = 0x33
-	MsgTypeActionError     uint8 = 0x34
+	MsgTypeActionSubscribe   uint8 = 0x30
+	MsgTypeActionAck         uint8 = 0x31
+	MsgTypeActionBatch       uint8 = 0x32
+	MsgTypeActionHeartbeat   uint8 = 0x33
+	MsgTypeActionError       uint8 = 0x34
+	MsgTypeActionDecoded     uint8 = 0x35
+	MsgTypeCatchupComplete   uint8 = 0x36
 
 	MaxMessageSize = 10 * 1024 * 1024
 )
@@ -58,6 +60,7 @@ type Action struct {
 type Filter struct {
 	Contracts []uint64
 	Receivers []uint64
+	Actions   []uint64
 }
 
 type Client struct {
@@ -77,10 +80,11 @@ type Client struct {
 	headSeq atomic.Uint64
 	libSeq  atomic.Uint64
 
-	recvChan  chan Action
-	closeChan chan struct{}
-	closed    atomic.Bool
-	wg        sync.WaitGroup
+	recvChan        chan Action
+	closeChan       chan struct{}
+	closed          atomic.Bool
+	catchupComplete atomic.Bool
+	wg              sync.WaitGroup
 }
 
 func NewClient(address string, filter Filter, startSeq uint64, config ClientConfig) *Client {
@@ -153,7 +157,13 @@ func (c *Client) dial() error {
 			c.headSeq.Store(binary.LittleEndian.Uint64(payload[0:8]))
 			c.libSeq.Store(binary.LittleEndian.Uint64(payload[8:16]))
 		}
-	case MsgTypeActionBatch:
+	case MsgTypeCatchupComplete:
+		if len(payload) >= 16 {
+			c.headSeq.Store(binary.LittleEndian.Uint64(payload[0:8]))
+			c.libSeq.Store(binary.LittleEndian.Uint64(payload[8:16]))
+		}
+		c.catchupComplete.Store(true)
+	case MsgTypeActionBatch, MsgTypeActionDecoded:
 		action, err := c.decodeAction(payload)
 		if err == nil {
 			select {
@@ -176,20 +186,26 @@ func (c *Client) dial() error {
 }
 
 func (c *Client) sendSubscribe(conn net.Conn, startFrom uint64) error {
-	payloadSize := 12 + len(c.filter.Contracts)*8 + len(c.filter.Receivers)*8
+	payloadSize := 15 + len(c.filter.Contracts)*8 + len(c.filter.Receivers)*8 + len(c.filter.Actions)*8
 	payload := make([]byte, payloadSize)
 
 	binary.LittleEndian.PutUint64(payload[0:8], startFrom)
 	binary.LittleEndian.PutUint16(payload[8:10], uint16(len(c.filter.Contracts)))
 	binary.LittleEndian.PutUint16(payload[10:12], uint16(len(c.filter.Receivers)))
+	binary.LittleEndian.PutUint16(payload[12:14], uint16(len(c.filter.Actions)))
+	payload[14] = 0x00
 
-	offset := 12
+	offset := 15
 	for _, contract := range c.filter.Contracts {
 		binary.LittleEndian.PutUint64(payload[offset:offset+8], contract)
 		offset += 8
 	}
 	for _, receiver := range c.filter.Receivers {
 		binary.LittleEndian.PutUint64(payload[offset:offset+8], receiver)
+		offset += 8
+	}
+	for _, action := range c.filter.Actions {
+		binary.LittleEndian.PutUint64(payload[offset:offset+8], action)
 		offset += 8
 	}
 
@@ -250,7 +266,7 @@ func (c *Client) recvLoop() {
 		}
 
 		switch msgType {
-		case MsgTypeActionBatch:
+		case MsgTypeActionBatch, MsgTypeActionDecoded:
 			action, err := c.decodeAction(payload)
 			if err != nil {
 				if c.config.Debug {
@@ -269,6 +285,16 @@ func (c *Client) recvLoop() {
 			if len(payload) >= 16 {
 				c.headSeq.Store(binary.LittleEndian.Uint64(payload[0:8]))
 				c.libSeq.Store(binary.LittleEndian.Uint64(payload[8:16]))
+			}
+
+		case MsgTypeCatchupComplete:
+			if len(payload) >= 16 {
+				c.headSeq.Store(binary.LittleEndian.Uint64(payload[0:8]))
+				c.libSeq.Store(binary.LittleEndian.Uint64(payload[8:16]))
+			}
+			c.catchupComplete.Store(true)
+			if c.config.Debug {
+				logger.Printf("actionstream", "Catchup complete, headSeq=%d, libSeq=%d", c.headSeq.Load(), c.libSeq.Load())
 			}
 
 		case MsgTypeActionError:
@@ -346,6 +372,10 @@ func (c *Client) GetLIBSeq() uint64 {
 
 func (c *Client) IsConnected() bool {
 	return c.connected.Load()
+}
+
+func (c *Client) IsCatchupComplete() bool {
+	return c.catchupComplete.Load()
 }
 
 func (c *Client) Close() error {

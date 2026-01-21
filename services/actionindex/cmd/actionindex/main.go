@@ -459,6 +459,8 @@ func main() {
 					logger.Fatal("Failed to start streaming WebSocket server: %v", err)
 				}
 			}
+
+			streamServer.StartStatsLogger(30 * time.Second)
 		}
 
 		syncer = internal.NewSyncer(indexes, store, syncReader, cfg, timing, broadcaster)
