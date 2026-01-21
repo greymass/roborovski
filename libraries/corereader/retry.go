@@ -39,7 +39,7 @@ func RetryWithBackoff(cfg RetryConfig, name string, fn func() error) error {
 				delay = remaining
 			}
 
-			logger.Printf("startup", "%s connection attempt %d failed: %v. Retrying in %v... (%v remaining)",
+			logger.Printf("config", "%s connection attempt %d failed: %v. Retrying in %v... (%v remaining)",
 				name, attempt, err, delay, remaining.Round(time.Second))
 			time.Sleep(delay)
 		}

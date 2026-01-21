@@ -91,6 +91,29 @@ func (sm *SharedSliceMetadata) updateSlice(idx int, slice SliceInfo) {
 	}
 }
 
+func (sm *SharedSliceMetadata) addSlice(slice SliceInfo) bool {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	if _, exists := sm.sliceIndex[slice.SliceNum]; exists {
+		return false
+	}
+
+	insertIdx := sort.Search(len(sm.slices), func(i int) bool {
+		return sm.slices[i].SliceNum >= slice.SliceNum
+	})
+
+	sm.slices = append(sm.slices, SliceInfo{})
+	copy(sm.slices[insertIdx+1:], sm.slices[insertIdx:])
+	sm.slices[insertIdx] = slice
+
+	for i, s := range sm.slices {
+		sm.sliceIndex[s.SliceNum] = i
+	}
+
+	return true
+}
+
 func (sm *SharedSliceMetadata) markSliceFinalized(idx int) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -403,6 +426,9 @@ type SliceReader struct {
 	globRangeIndex  *GlobRangeIndex
 	blockIndexCache *BlockIndexCache
 
+	sliceDiscoveryMu sync.Mutex
+	sliceDiscovering map[uint32]chan struct{}
+
 	cacheHits           atomic.Uint64
 	cacheMisses         atomic.Uint64
 	lastStatsReport     atomic.Int64  // Unix timestamp of last report
@@ -493,6 +519,7 @@ func NewSliceReaderWithOptions(basePath string, opts SliceReaderOptions) (*Slice
 		blockCache:          blockCache,
 		blockIndexCache:     blockIndexCache,
 		sliceLoading:        make(map[uint32]bool),
+		sliceDiscovering:    make(map[uint32]chan struct{}),
 		statsReportInterval: 10, // Report cache stats every 10 seconds
 		stopStatsTicker:     make(chan struct{}),
 	}
@@ -792,9 +819,9 @@ func findLastBlockInIndex(indexPath string) (uint32, uint64, uint64, error) {
 	firstGlobMin := binary.LittleEndian.Uint64(firstEntry[16:24])
 
 	if lastGlobMax > 1<<40 || firstGlobMin > 1<<40 {
-		logger.Printf("error", "[findLastBlockInIndex] SUSPICIOUS values in %s: count=%d, lastEntry bytes[16:32]=%x, firstEntry bytes[16:24]=%x",
+		logger.Printf("error", "Suspicious values in %s: count=%d, lastEntry bytes[16:32]=%x, firstEntry bytes[16:24]=%x",
 			indexPath, count, entry[16:32], firstEntry[16:24])
-		logger.Printf("error", "[findLastBlockInIndex] Parsed: endBlock=%d, firstGlobMin=%d, lastGlobMax=%d",
+		logger.Printf("error", "Parsed: endBlock=%d, firstGlobMin=%d, lastGlobMax=%d",
 			endBlock, firstGlobMin, lastGlobMax)
 	}
 
@@ -1020,15 +1047,15 @@ func (sr *SliceReader) RefreshSliceMetadata() error {
 		return err
 	}
 
-	logger.Printf("debug", "[RefreshSliceMetadata] Read from %s: endBlock=%d, globMin=%d, globMax=%d",
+	logger.Printf("sync", "Slice metadata read from %s: endBlock=%d, globMin=%d, globMax=%d",
 		blockIndexPath, endBlock, globMin, globMax)
 
 	if globMin > globMax {
-		logger.Printf("error", "[RefreshSliceMetadata] INVALID: globMin (%d) > globMax (%d) from %s",
+		logger.Printf("error", "Invalid slice metadata: globMin (%d) > globMax (%d) from %s",
 			globMin, globMax, blockIndexPath)
 	}
-	if globMax > 1<<40 { // > 1 trillion is suspicious
-		logger.Printf("error", "[RefreshSliceMetadata] SUSPICIOUS: globMax=%d seems too large (path: %s)",
+	if globMax > 1<<40 {
+		logger.Printf("error", "Suspicious slice metadata: globMax=%d seems too large (path: %s)",
 			globMax, blockIndexPath)
 	}
 
@@ -1043,11 +1070,11 @@ func (sr *SliceReader) RefreshSliceMetadata() error {
 
 	if sr.blockIndexCache != nil {
 		if err := sr.blockIndexCache.LoadSliceFromBlocksIndex(slicePath, lastSlice.SliceNum, lastSlice.StartBlock, false); err != nil {
-			logger.Printf("warning", "[RefreshSliceMetadata] Failed to update blockIndexCache for slice %d: %v", lastSlice.SliceNum, err)
+			logger.Printf("warning", "Failed to update blockIndexCache for slice %d: %v", lastSlice.SliceNum, err)
 		}
 	}
 
-	logger.Printf("debug", "[RefreshSliceMetadata] Slice %d updated: EndBlock=%d→%d, GlobMin=%d→%d, GlobMax=%d→%d",
+	logger.Printf("sync", "Slice %d metadata updated: EndBlock=%d→%d, GlobMin=%d→%d, GlobMax=%d→%d",
 		lastSlice.SliceNum, oldEndBlock, endBlock, oldGlobMin, globMin, oldGlobMax, globMax)
 
 	sliceKey := (lastSlice.StartBlock - 1) / lastSlice.BlocksPerSlice
@@ -1055,7 +1082,7 @@ func (sr *SliceReader) RefreshSliceMetadata() error {
 
 	sr.lastAccessedSliceIdx.Store(-1)
 
-	logger.Printf("live", "Slice %d EndBlock updated: %d → %d (index will auto-reload)",
+	logger.Printf("sync", "Slice %d EndBlock updated: %d → %d (index will auto-reload)",
 		lastSlice.SliceNum, oldEndBlock, endBlock)
 	return nil
 }
@@ -1253,7 +1280,7 @@ func (sr *SliceReader) findSliceForBlock(blockNum uint32) (*SliceInfo, error) {
 				}
 			}
 
-			logger.Printf("live", "Detected new slice %d (blocks %d-%d, EndBlock=%d) - added to reader",
+			logger.Printf("sync", "Detected new slice %d (blocks %d-%d, EndBlock=%d) - added to reader",
 				sliceKey, sliceStartBlock, sliceMaxBlock, endBlock)
 
 			return &newSlice, nil
@@ -1351,16 +1378,57 @@ func (sr *SliceReader) findSliceForGlob(glob uint64) (*SliceInfo, error) {
 }
 
 func (sr *SliceReader) findSliceForGlobTracked(glob uint64) (*SliceInfo, bool, error) {
-	// Use sharedMetadata directly - it's always up-to-date with current glob ranges
 	sliceInfo, _ := sr.sharedMetadata.findSliceForGlob(glob)
 	if sliceInfo != nil {
-		return sliceInfo, false, nil // Found in memory, no disk hit
+		return sliceInfo, false, nil
 	}
 
-	// Fallback to legacy disk-based search if not found in metadata
-	// This can happen if metadata glob ranges are stale (shouldn't happen normally)
+	sr.sliceDiscoveryMu.Lock()
+
+	sliceInfo, _ = sr.sharedMetadata.findSliceForGlob(glob)
+	if sliceInfo != nil {
+		sr.sliceDiscoveryMu.Unlock()
+		return sliceInfo, false, nil
+	}
+
+	if sr.sliceDiscovering == nil {
+		sr.sliceDiscovering = make(map[uint32]chan struct{})
+	}
+
+	globKey := uint32(glob >> 32)
+	if waitCh, discovering := sr.sliceDiscovering[globKey]; discovering {
+		sr.sliceDiscoveryMu.Unlock()
+		<-waitCh
+		sliceInfo, _ = sr.sharedMetadata.findSliceForGlob(glob)
+		if sliceInfo != nil {
+			return sliceInfo, false, nil
+		}
+	}
+
+	doneCh := make(chan struct{})
+	sr.sliceDiscovering[globKey] = doneCh
+	sr.sliceDiscoveryMu.Unlock()
+
+	defer func() {
+		sr.sliceDiscoveryMu.Lock()
+		delete(sr.sliceDiscovering, globKey)
+		sr.sliceDiscoveryMu.Unlock()
+		close(doneCh)
+	}()
+
 	sliceInfo, err := sr.findSliceForGlobLegacy(glob)
-	return sliceInfo, true, err
+	if err != nil {
+		return nil, true, err
+	}
+
+	if sliceInfo != nil && sliceInfo.GlobMin > 0 && sliceInfo.GlobMax > 0 {
+		if sr.sharedMetadata.addSlice(*sliceInfo) {
+			logger.Printf("sync", "Added newly discovered slice %d to cache (glob range %d-%d)",
+				sliceInfo.SliceNum, sliceInfo.GlobMin, sliceInfo.GlobMax)
+		}
+	}
+
+	return sliceInfo, true, nil
 }
 
 func (sr *SliceReader) findSliceForGlobWithRangeIndex(glob uint64) (*SliceInfo, error) {
@@ -1406,8 +1474,8 @@ func (sr *SliceReader) findSliceForGlobFromDisk(glob uint64, startSliceNum uint3
 		return nil, fmt.Errorf("no slices available")
 	}
 
-	logger.Printf("debug", "[findSliceForGlobFromDisk] Searching for glob %d in unindexed slices (startSliceNum=%d)", glob, startSliceNum)
-	logger.Printf("debug", "[findSliceForGlobFromDisk] Total slices available: %d", sliceCount)
+	logger.Printf("debug", "Searching for glob %d in unindexed slices (startSliceNum=%d)", glob, startSliceNum)
+	logger.Printf("debug", "Total slices available: %d", sliceCount)
 
 	checkedCount := 0
 	for i := sliceCount - 1; i >= 0; i-- {
@@ -1418,18 +1486,18 @@ func (sr *SliceReader) findSliceForGlobFromDisk(glob uint64, startSliceNum uint3
 		}
 
 		checkedCount++
-		logger.Printf("debug", "[findSliceForGlobFromDisk] Checking slice %d (num=%d, blocks=%d-%d, finalized=%v)", i, slice.SliceNum, slice.StartBlock, slice.EndBlock, slice.Finalized)
+		logger.Printf("debug", "Checking slice %d (num=%d, blocks=%d-%d, finalized=%v)", i, slice.SliceNum, slice.StartBlock, slice.EndBlock, slice.Finalized)
 
 		if !slice.Finalized && slice.GlobMax > 0 {
 			cachedMin, cachedMax := slice.GlobMin, slice.GlobMax
-			logger.Printf("debug", "[findSliceForGlobFromDisk] Slice %d (non-finalized) cached glob range: %d-%d (looking for %d)", slice.SliceNum, cachedMin, cachedMax, glob)
+			logger.Printf("debug", "Slice %d (non-finalized) cached glob range: %d-%d (looking for %d)", slice.SliceNum, cachedMin, cachedMax, glob)
 
 			if glob > cachedMax {
 				slicePath := filepath.Join(sr.basePath, fmt.Sprintf("history_%010d-%010d", slice.StartBlock, slice.MaxBlock))
 				blockIndexPath := filepath.Join(slicePath, "blocks.index")
 				_, freshGlobMin, freshGlobMax, err := findLastBlockInIndex(blockIndexPath)
 				if err == nil && freshGlobMax > cachedMax {
-					logger.Printf("debug", "[findSliceForGlobFromDisk] Refreshed slice %d glob range: %d-%d → %d-%d",
+					logger.Printf("debug", "Refreshed slice %d glob range: %d-%d → %d-%d",
 						slice.SliceNum, cachedMin, cachedMax, freshGlobMin, freshGlobMax)
 					sr.sharedMetadata.updateLastSliceGlobRange(freshGlobMin, freshGlobMax)
 					cachedMin, cachedMax = freshGlobMin, freshGlobMax
@@ -1437,7 +1505,7 @@ func (sr *SliceReader) findSliceForGlobFromDisk(glob uint64, startSliceNum uint3
 			}
 
 			if glob >= cachedMin && glob <= cachedMax {
-				logger.Printf("debug", "[findSliceForGlobFromDisk] FOUND glob %d in non-finalized slice %d (using cached range)", glob, slice.SliceNum)
+				logger.Printf("debug", "Found glob %d in non-finalized slice %d (using cached range)", glob, slice.SliceNum)
 				return &slice, nil
 			}
 			continue
@@ -1445,32 +1513,32 @@ func (sr *SliceReader) findSliceForGlobFromDisk(glob uint64, startSliceNum uint3
 
 		reader, err := sr.getSliceReader(slice.SliceNum)
 		if err != nil {
-			logger.Printf("debug", "[findSliceForGlobFromDisk] Failed to load slice %d reader: %v", slice.SliceNum, err)
+			logger.Printf("debug", "Failed to load slice %d reader: %v", slice.SliceNum, err)
 			continue
 		}
 		globMin, globMax := reader.getGlobRangeFromBlockIndex()
 		sr.releaseSliceReader(slice.SliceNum)
 		if globMin == 0 && globMax == 0 {
-			logger.Printf("debug", "[findSliceForGlobFromDisk] Slice %d has empty block index", slice.SliceNum)
+			logger.Printf("debug", "Slice %d has empty block index", slice.SliceNum)
 			continue
 		}
 
-		logger.Printf("debug", "[findSliceForGlobFromDisk] Slice %d glob range: %d-%d (looking for %d)", slice.SliceNum, globMin, globMax, glob)
+		logger.Printf("debug", "Slice %d glob range: %d-%d (looking for %d)", slice.SliceNum, globMin, globMax, glob)
 
 		if glob >= globMin && glob <= globMax {
-			logger.Printf("debug", "[findSliceForGlobFromDisk] FOUND glob %d in slice %d", glob, slice.SliceNum)
+			logger.Printf("debug", "Found glob %d in slice %d", glob, slice.SliceNum)
 			return &slice, nil
 		}
 	}
 
-	logger.Printf("debug", "[findSliceForGlobFromDisk] Checked %d slices, glob %d not found", checkedCount, glob)
+	logger.Printf("debug", "Checked %d slices, glob %d not found", checkedCount, glob)
 	return nil, fmt.Errorf("glob %d not found in any slice (checked %d slices)", glob, checkedCount)
 }
 
 func (sr *SliceReader) findSliceForGlobLegacy(glob uint64) (*SliceInfo, error) {
 	slicesCopy := sr.sharedMetadata.getSlices()
 
-	logger.Printf("warning", "[findSliceForGlobLegacy] Binary search for glob %d across %d slices", glob, len(slicesCopy))
+	logger.Printf("warning", "Legacy binary search for glob %d across %d slices", glob, len(slicesCopy))
 
 	left, right := 0, len(slicesCopy)-1
 	iteration := 0
@@ -1487,8 +1555,8 @@ func (sr *SliceReader) findSliceForGlobLegacy(glob uint64) (*SliceInfo, error) {
 			globMax = slice.GlobMax
 
 			if globMin > globMax || globMax > 1<<40 {
-				logger.Printf("error", "[findSliceForGlobLegacy] iter %d: slice %d has INVALID cached glob range [%d-%d] (looking for %d)",
-					iteration, slice.SliceNum, globMin, globMax, glob)
+				logger.Printf("error", "Slice %d has invalid cached glob range [%d-%d] (looking for %d)",
+					slice.SliceNum, globMin, globMax, glob)
 			}
 
 			if glob > globMax && mid == len(slicesCopy)-1 {
@@ -1496,8 +1564,8 @@ func (sr *SliceReader) findSliceForGlobLegacy(glob uint64) (*SliceInfo, error) {
 				blockIndexPath := filepath.Join(slicePath, "blocks.index")
 				_, freshGlobMin, freshGlobMax, err := findLastBlockInIndex(blockIndexPath)
 				if err == nil && freshGlobMax > globMax {
-					logger.Printf("warning", "[findSliceForGlobLegacy] iter %d: slice %d cache stale, reloaded from disk: [%d-%d] -> [%d-%d]",
-						iteration, slice.SliceNum, globMin, globMax, freshGlobMin, freshGlobMax)
+					logger.Printf("warning", "Slice %d cache stale, reloaded from disk: [%d-%d] -> [%d-%d]",
+						slice.SliceNum, globMin, globMax, freshGlobMin, freshGlobMax)
 					globMin = freshGlobMin
 					globMax = freshGlobMax
 
@@ -1505,40 +1573,43 @@ func (sr *SliceReader) findSliceForGlobLegacy(glob uint64) (*SliceInfo, error) {
 				}
 			}
 
-			logger.Printf("warning", "[findSliceForGlobLegacy] iter %d: slice %d (non-finalized) cached range [%d-%d], looking for %d",
-				iteration, slice.SliceNum, globMin, globMax, glob)
+			logger.Printf("warning", "Slice %d (non-finalized) cached range [%d-%d], looking for %d",
+				slice.SliceNum, globMin, globMax, glob)
 		} else {
 			reader, err := sr.getSliceReader(slice.SliceNum)
 			if err != nil {
-				logger.Printf("warning", "[findSliceForGlobLegacy] iter %d: slice %d failed to load, skipping: %v", iteration, slice.SliceNum, err)
+				logger.Printf("warning", "Slice %d failed to load, skipping: %v", slice.SliceNum, err)
 				left = mid + 1
 				continue
 			}
 			globMin, globMax = reader.getGlobRangeFromBlockIndex()
 			sr.releaseSliceReader(slice.SliceNum)
 			if globMin == 0 && globMax == 0 {
-				logger.Printf("warning", "[findSliceForGlobLegacy] iter %d: slice %d has empty block index, skipping", iteration, slice.SliceNum)
+				logger.Printf("warning", "Slice %d has empty block index, skipping", slice.SliceNum)
 				left = mid + 1
 				continue
 			}
 
-			logger.Printf("warning", "[findSliceForGlobLegacy] iter %d: slice %d range [%d-%d], looking for %d",
-				iteration, slice.SliceNum, globMin, globMax, glob)
+			logger.Printf("warning", "Slice %d range [%d-%d], looking for %d",
+				slice.SliceNum, globMin, globMax, glob)
 		}
 
 		if glob < globMin {
-			logger.Printf("warning", "[findSliceForGlobLegacy] glob < min, searching left (right=%d->%d)", right, mid-1)
+			logger.Printf("warning", "Glob %d < min, searching left (right=%d->%d)", glob, right, mid-1)
 			right = mid - 1
 		} else if glob > globMax {
-			logger.Printf("warning", "[findSliceForGlobLegacy] glob > max, searching right (left=%d->%d)", left, mid+1)
+			logger.Printf("warning", "Glob %d > max, searching right (left=%d->%d)", glob, left, mid+1)
 			left = mid + 1
 		} else {
-			logger.Printf("warning", "[findSliceForGlobLegacy] FOUND glob %d in slice %d", glob, slice.SliceNum)
-			return &slicesCopy[mid], nil
+			logger.Printf("warning", "Found glob %d in slice %d", glob, slice.SliceNum)
+			result := slicesCopy[mid]
+			result.GlobMin = globMin
+			result.GlobMax = globMax
+			return &result, nil
 		}
 	}
 
-	logger.Printf("warning", "[findSliceForGlobLegacy] Binary search exhausted after %d iterations, glob %d not found", iteration, glob)
+	logger.Printf("warning", "Legacy search exhausted after %d iterations, glob %d not found", iteration, glob)
 	return nil, fmt.Errorf("glob %d not found in any slice", glob)
 }
 
@@ -1726,7 +1797,7 @@ func (sr *SliceReader) loadSliceReaderFromDisk(sliceNum uint32) (*sliceReader, e
 	}
 
 	slicePath := filepath.Join(sr.basePath, fmt.Sprintf("history_%010d-%010d", sliceInfo.StartBlock, sliceInfo.MaxBlock))
-	logger.Printf("debug", "[loadSliceReaderFromDisk] Loading slice %d from %s (EndBlock=%d, Finalized=%v)",
+	logger.Printf("debug", "Loading slice %d from %s (EndBlock=%d, Finalized=%v)",
 		sliceNum, slicePath, sliceInfo.EndBlock, sliceInfo.Finalized)
 
 	reader, err := newSliceReader(slicePath, sliceNum)
@@ -1734,7 +1805,7 @@ func (sr *SliceReader) loadSliceReaderFromDisk(sliceNum uint32) (*sliceReader, e
 		return nil, fmt.Errorf("failed to load slice %d: %w", sliceNum, err)
 	}
 
-	logger.Printf("debug", "[loadSliceReaderFromDisk] Slice %d loaded: blockIndex has %d entries",
+	logger.Printf("debug", "Slice %d loaded: blockIndex has %d entries",
 		sliceNum, len(reader.blockIndex))
 
 	return reader, nil
@@ -1751,7 +1822,7 @@ func (sr *SliceReader) getSliceReader(sliceNum uint32) (*sliceReader, error) {
 	}
 
 	if !sliceInfo.Finalized {
-		logger.Printf("debug", "[getSliceReader] Slice %d is NOT finalized, reloading from disk", sliceNum)
+		logger.Printf("debug", "Slice %d is not finalized, reloading from disk", sliceNum)
 		return sr.loadSliceReaderFromDisk(sliceNum)
 	}
 
@@ -2030,14 +2101,14 @@ func (r *sliceReader) readBlockData(blockNum uint32) ([]byte, error) {
 		}
 		r.mu.RUnlock()
 
-		logger.Printf("debug", "[readBlockData] Block %d not in cached index (slice %d has %d blocks, range %d-%d), attempting reload",
+		logger.Printf("debug", "Block %d not in cached index (slice %d has %d blocks, range %d-%d), attempting reload",
 			blockNum, r.sliceNum, indexSize, minBlock, maxBlock)
 
 		r.mu.Lock()
 		entry, found = r.blockIndex[blockNum]
 		if !found {
 			blockIdxPath := filepath.Join(r.basePath, "blocks.index")
-			logger.Printf("debug", "readBlockData: reloading index from %s", blockIdxPath)
+			logger.Printf("debug", "Reloading index from %s", blockIdxPath)
 			freshIdx, err := loadBlockIndexSimple(blockIdxPath)
 			if err != nil {
 				r.mu.Unlock()
@@ -2062,7 +2133,7 @@ func (r *sliceReader) readBlockData(blockNum uint32) ([]byte, error) {
 					}
 				}
 				r.mu.Unlock()
-				logger.Printf("debug", "[readBlockData] Block %d NOT FOUND even after reload (slice %d fresh index has %d blocks, range %d-%d)",
+				logger.Printf("debug", "Block %d not found even after reload (slice %d fresh index has %d blocks, range %d-%d)",
 					blockNum, r.sliceNum, len(freshIdx), minBlock, maxBlock)
 				return nil, fmt.Errorf("block %d not found in slice %d", blockNum, r.sliceNum)
 			}
@@ -2594,11 +2665,11 @@ func (sr *SliceReader) GetRawBlockBatchFiltered(startBlock, endBlock uint32, fil
 		} else {
 			reader, err := sr.loadSliceReaderFromDisk(sliceNum)
 			if err != nil {
-				logger.Printf("debug", "[GetRawBlockBatchFiltered] Failed to pre-load non-finalized slice %d: %v", sliceNum, err)
+				logger.Printf("debug", "Failed to pre-load non-finalized slice %d: %v", sliceNum, err)
 				continue
 			}
 			batchSliceReaders[sliceNum] = reader
-			logger.Printf("debug", "[GetRawBlockBatchFiltered] Pre-loaded non-finalized slice %d with %d blocks", sliceNum, len(reader.blockIndex))
+			logger.Printf("debug", "Pre-loaded non-finalized slice %d with %d blocks", sliceNum, len(reader.blockIndex))
 		}
 	}
 
@@ -3240,7 +3311,7 @@ func parseBlockWithCanonical(blockData []byte, filterFunc ActionFilterFunc) (map
 
 		globSeq := blob.Block.MinGlobInBlock + uint64(i) + uint64(act.CatOffset)
 		if globSeq < blob.Block.MinGlobInBlock || globSeq > blob.Block.MaxGlobInBlock {
-			logger.Printf("error", "[parseBlockWithCanonical] Block %d action %d globSeq=%d out of range [%d, %d]",
+			logger.Printf("error", "Block %d action %d globSeq=%d out of range [%d, %d]",
 				blob.Block.BlockNum, i, globSeq, blob.Block.MinGlobInBlock, blob.Block.MaxGlobInBlock)
 		}
 
@@ -3343,15 +3414,15 @@ func (sr *SliceReader) GetStateProps(bypassCache bool) (uint32, uint32, error) {
 			blockIndexPath := filepath.Join(nextSlicePath, "blocks.index")
 			endBlock, globMin, globMax, err := findLastBlockInIndex(blockIndexPath)
 			if err != nil {
-				logger.Printf("warning", "[GetStateProps] New slice %d exists but can't read blocks.index: %v", nextSliceNum, err)
+				logger.Printf("warning", "New slice %d exists but can't read blocks.index: %v", nextSliceNum, err)
 				break
 			}
 
 			if globMin > globMax {
-				logger.Printf("error", "[GetStateProps] INVALID new slice: globMin (%d) > globMax (%d)", globMin, globMax)
+				logger.Printf("error", "Invalid new slice: globMin (%d) > globMax (%d)", globMin, globMax)
 			}
 			if globMax > 1<<40 {
-				logger.Printf("error", "[GetStateProps] SUSPICIOUS new slice: globMax=%d seems too large", globMax)
+				logger.Printf("error", "Suspicious new slice: globMax=%d seems too large", globMax)
 			}
 
 			newSlice := SliceInfo{
@@ -3386,7 +3457,7 @@ func (sr *SliceReader) GetStateProps(bypassCache bool) (uint32, uint32, error) {
 			}
 
 			if !alreadyKnown {
-				logger.Printf("live", "New slice %d (blocks %d-%d, globs %d-%d)",
+				logger.Printf("sync", "New slice %d (blocks %d-%d, globs %d-%d)",
 					nextSliceNum, nextSliceStart, endBlock, globMin, globMax)
 			}
 		}
@@ -3401,11 +3472,11 @@ func (sr *SliceReader) GetStateProps(bypassCache bool) (uint32, uint32, error) {
 		}
 
 		if globMin > globMax {
-			logger.Printf("error", "[GetStateProps] INVALID: globMin (%d) > globMax (%d) from %s",
+			logger.Printf("error", "Invalid state: globMin (%d) > globMax (%d) from %s",
 				globMin, globMax, blockIndexPath)
 		}
-		if globMax > 1<<40 { // > 1 trillion is suspicious
-			logger.Printf("error", "[GetStateProps] SUSPICIOUS: globMax=%d seems too large (path: %s)",
+		if globMax > 1<<40 {
+			logger.Printf("error", "Suspicious state: globMax=%d seems too large (path: %s)",
 				globMax, blockIndexPath)
 		}
 
@@ -3499,7 +3570,7 @@ func (sr *SliceReader) GetActionsByGlobalSeqs(globalSeqs []uint64) ([]chain.Acti
 		diskLookups++
 		sliceInfoDisk, _, err := sr.findSliceForGlobTracked(glob)
 		if err != nil {
-			logger.Printf("error", "[GetActionsByGlobalSeqs] glob %d not found | index %d/%d | all requested: %v",
+			logger.Printf("error", "Glob %d not found | index %d/%d | all requested: %v",
 				glob, i, len(globalSeqs), globalSeqs)
 			return nil, nil, fmt.Errorf("glob %d not found in any slice: %w", glob, err)
 		}

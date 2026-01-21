@@ -93,9 +93,9 @@ func openHTTP(address string, isUnixSocket bool, cfg OpenConfig) (Reader, error)
 	}
 
 	if isUnixSocket {
-		logger.Printf("startup", "Connected to HTTP server via unix socket: %s", address)
+		logger.Printf("config", "Connected to HTTP server via unix socket: %s", address)
 	} else {
-		logger.Printf("startup", "Connected to HTTP server: %s", address)
+		logger.Printf("config", "Connected to HTTP server: %s", address)
 	}
 
 	return &syncReader{
@@ -128,7 +128,7 @@ func openStream(address string, cfg OpenConfig) (Reader, error) {
 		return nil, fmt.Errorf("failed to connect to stream server: %w", err)
 	}
 
-	logger.Printf("startup", "Connected to stream server: %s (starting at block %d)", address, cfg.StartBlock)
+	logger.Printf("config", "Connected to stream server: %s (starting at block %d)", address, cfg.StartBlock)
 
 	return &streamSyncReader{
 		stream:       streamReader,

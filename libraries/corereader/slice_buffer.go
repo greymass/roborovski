@@ -48,12 +48,12 @@ type SliceBuffer struct {
 
 func NewSliceBufferPool(maxSizeMB int64) *SliceBufferPool {
 	if maxSizeMB <= 0 {
-		logger.Printf("buffer", "Slice buffer pool DISABLED (maxSizeMB=%d)", maxSizeMB)
+		logger.Printf("debug", "Slice buffer pool DISABLED (maxSizeMB=%d)", maxSizeMB)
 		return &SliceBufferPool{enabled: false}
 	}
 
 	maxBytes := maxSizeMB * 1024 * 1024
-	logger.Printf("buffer", "Slice buffer pool ENABLED: %d MB max (%d bytes)", maxSizeMB, maxBytes)
+	logger.Printf("debug", "Slice buffer pool ENABLED: %d MB max (%d bytes)", maxSizeMB, maxBytes)
 
 	return &SliceBufferPool{
 		buffers:  make(map[uint32]*SliceBuffer),
@@ -189,12 +189,12 @@ func (pool *SliceBufferPool) GetStats() (slicesLoaded, blocksServed, evictions, 
 func (pool *SliceBufferPool) LogStats() {
 	loaded, served, evict, skip, usedMB, maxMB, count := pool.GetStats()
 
-	logger.Printf("buffer", "=== SLICE BUFFER POOL STATS ===")
-	logger.Printf("buffer", "Buffers in memory: %d slices (%d MB / %d MB)",
+	logger.Printf("debug", "=== SLICE BUFFER POOL STATS ===")
+	logger.Printf("debug", "Buffers in memory: %d slices (%d MB / %d MB)",
 		count, usedMB, maxMB)
-	logger.Printf("buffer", "Slices loaded: %d (from disk)", loaded)
-	logger.Printf("buffer", "Blocks served: %d (from memory buffers)", served)
-	logger.Printf("buffer", "Evictions: %d (LRU) | Skipped: %d (non-finalized)", evict, skip)
+	logger.Printf("debug", "Slices loaded: %d (from disk)", loaded)
+	logger.Printf("debug", "Blocks served: %d (from memory buffers)", served)
+	logger.Printf("debug", "Evictions: %d (LRU) | Skipped: %d (non-finalized)", evict, skip)
 }
 
 func loadSliceData(basePath string, sliceInfo SliceInfo) ([]byte, map[uint32]blockIndexEntry, error) {
