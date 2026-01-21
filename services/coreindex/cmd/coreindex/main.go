@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1317,7 +1318,7 @@ func gophers(config *server.Config, traceConfig *tracereader.Config, strideChan 
 	}
 }
 
-func doHandleRPC(config *server.Config, store appendlog.StoreInterface, w http.ResponseWriter, r *http.Request) {
+func doHandleRPC(config *server.Config, store appendlog.StoreInterface, abiReader *abicache.Reader, w http.ResponseWriter, r *http.Request) {
 	if !(*config).AcceptHTTP {
 		http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
 		return
@@ -1372,7 +1373,50 @@ func doHandleRPC(config *server.Config, store appendlog.StoreInterface, w http.R
 		return
 	}
 
+	if strings.HasPrefix(inpath, "/abi/") {
+		handleGetABI(store, abiReader, w, r)
+		return
+	}
+
 	http.Error(w, "Not found", http.StatusNotFound)
+}
+
+func handleGetABI(store appendlog.StoreInterface, abiReader *abicache.Reader, w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/abi/")
+	parts := strings.Split(path, "/")
+
+	if len(parts) == 0 || parts[0] == "" {
+		http.Error(w, `{"error": "account name required"}`, http.StatusBadRequest)
+		return
+	}
+
+	accountName := parts[0]
+	contract := chain.StringToName(accountName)
+	if contract == 0 {
+		http.Error(w, `{"error": "invalid account name"}`, http.StatusBadRequest)
+		return
+	}
+
+	var atBlock uint32
+	if len(parts) >= 2 && parts[1] != "" {
+		blockNum, err := strconv.ParseUint(parts[1], 10, 32)
+		if err != nil {
+			http.Error(w, `{"error": "invalid block number"}`, http.StatusBadRequest)
+			return
+		}
+		atBlock = uint32(blockNum)
+	} else {
+		atBlock = store.GetHead()
+	}
+
+	abiBytes, err := abiReader.Get(contract, atBlock)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error": "ABI not found: %s"}`, err.Error()), http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(abiBytes)
 }
 
 func handleGetInfo(config *server.Config, store appendlog.StoreInterface, w http.ResponseWriter, r *http.Request) {
@@ -1949,6 +1993,12 @@ func main() {
 	}()
 	logger.Printf("startup", "ABI cache: %s", abiPath)
 
+	abiReader, err := abicache.NewReader(abiPath)
+	if err != nil {
+		logger.Fatal("Failed to open ABI cache reader: %v", err)
+	}
+	defer abiReader.Close()
+
 	// Handle --repair-slice N BEFORE validation: repair specific slice and exit
 	if cfg.RepairSlice >= 0 {
 		sliceNum := uint32(cfg.RepairSlice)
@@ -2002,6 +2052,39 @@ func main() {
 
 		elapsed := time.Since(startTime)
 		logger.Printf("startup", "  ✓ Repair complete: %d glob entries in %.2fs", globCount, elapsed.Seconds())
+		os.Exit(0)
+	}
+
+	// Handle --rebuild-abis mode: scan slices or query actionindex for setabi actions
+	if cfg.RebuildABIs {
+		logger.Println("startup", "")
+		logger.Println("startup", "Rebuild ABI cache:")
+
+		abiPath := cfg.ABIPath
+		if abiPath == "" {
+			abiPath = filepath.Join(cfg.Path, "abis")
+		}
+
+		if cfg.ActionIndexSource != "" {
+			logger.Printf("startup", "  Mode: stream from actionindex (%s)", cfg.ActionIndexSource)
+		} else {
+			logger.Println("startup", "  Mode: scan slices (this may take a while)")
+		}
+		logger.Printf("startup", "  Output: %s", abiPath)
+
+		result, err := RebuildABIs(store, abiPath, cfg.ActionIndexSource)
+		if err != nil {
+			logger.Fatal("ABI rebuild failed: %v", err)
+		}
+
+		logger.Println("startup", "")
+		logger.Printf("startup", "  ✓ ABI rebuild complete in %v", result.Duration)
+		logger.Printf("startup", "    Blocks scanned: %d", result.BlocksScanned)
+		logger.Printf("startup", "    Actions scanned: %d", result.ActionsScanned)
+		logger.Printf("startup", "    setabi actions found: %d", result.ABIsFound)
+		logger.Printf("startup", "    ABIs written: %d", result.ABIsWritten)
+		logger.Printf("startup", "    ABIs failed to parse: %d", result.ABIsFailed)
+		store.Close()
 		os.Exit(0)
 	}
 
@@ -2214,7 +2297,7 @@ func main() {
 	// Start HTTP API servers (allows queries during sync)
 	// Use "none" or empty string to disable a listener
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		doHandleRPC(serverConfig, store, w, r)
+		doHandleRPC(serverConfig, store, abiReader, w, r)
 	})
 
 	httpListeners := []string{}

@@ -57,7 +57,9 @@ type Config struct {
 	RepairSlice int  `name:"repair-slice" default:"-1" help:"Repair specific slice by rebuilding indexes from data.log"`
 	RepairAll   bool `name:"repair-all" help:"Scan all slices and repair any with invalid indexes"`
 
-	ABIPath string `name:"abi-source" alias:"abi-path" help:"Path to ABI cache (default: {index-storage}/abis/)"`
+	ABIPath           string `name:"abi-source" alias:"abi-path" help:"Path to ABI cache (default: {index-storage}/abis/)"`
+	RebuildABIs       bool   `name:"rebuild-abis" help:"Scan slices for eosio::setabi actions and rebuild the ABI cache, then exit"`
+	ActionIndexSource string `name:"actionindex-source" help:"Optional actionindex socket/address for faster ABI rebuild (streams setabi actions instead of scanning slices)"`
 }
 
 func (c *Config) ValidateTraceCleanup() error {
