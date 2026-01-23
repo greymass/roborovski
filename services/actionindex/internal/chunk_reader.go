@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/cockroachdb/pebble/v2"
+	"github.com/greymass/roborovski/libraries/chain"
 	"github.com/greymass/roborovski/libraries/logger"
 )
 
@@ -72,7 +73,7 @@ func (r *ChunkReader) GetLastN(account uint64, n int) ([]uint64, error) {
 	if chunkCount == 0 {
 		if r.walReader != nil {
 			seqs, err := r.walReader.GetEntriesForAccount(account)
-			logger.Printf("debug-perf", "[GetLastN] account=%d chunkCount=0 walScan=%v", account, time.Since(t1))
+			logger.Printf("debug-perf", "[GetLastN] account=%s chunkCount=0 walScan=%v", chain.NameToString(account), time.Since(t1))
 			return seqs, err
 		}
 		return nil, nil
@@ -130,8 +131,8 @@ func (r *ChunkReader) GetLastN(account uint64, n int) ([]uint64, error) {
 	}
 	t6 := time.Now()
 
-	logger.Printf("debug-perf", "[GetLastN] account=%d meta=%v seqRange=%v newIter=%v seekGE=%v (found=%v) loop=%v wal=%v total=%v",
-		account, t1.Sub(t0), t2.Sub(t1), t3.Sub(t2), t4.Sub(t3), found, t5.Sub(t4), t6.Sub(t5), t6.Sub(t0))
+	logger.Printf("debug-perf", "[GetLastN] account=%s meta=%v seqRange=%v newIter=%v seekGE=%v (found=%v) loop=%v wal=%v total=%v",
+		chain.NameToString(account), t1.Sub(t0), t2.Sub(t1), t3.Sub(t2), t4.Sub(t3), found, t5.Sub(t4), t6.Sub(t5), t6.Sub(t0))
 
 	return seqs, iter.Error()
 }

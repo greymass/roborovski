@@ -103,9 +103,9 @@ func removeNullValues(m map[string]interface{}) map[string]interface{} {
 	return result
 }
 
-func fetchActionsByGlobalSeqs(reader corereader.Reader, globalSeqs []uint64, abiReader *abicache.Reader, omitNullFields bool, includeAccountSeq bool) ([]ActionResult, *corereader.FetchTimings, error) {
+func getActionsByGlobalSeqs(reader corereader.Reader, globalSeqs []uint64) ([]chain.ActionTrace, *corereader.FetchTimings, error) {
 	if len(globalSeqs) == 0 {
-		return []ActionResult{}, nil, nil
+		return nil, nil, nil
 	}
 
 	actions, timings, err := reader.GetActionsByGlobalSeqs(globalSeqs)
@@ -116,6 +116,18 @@ func fetchActionsByGlobalSeqs(reader corereader.Reader, globalSeqs []uint64, abi
 		} else {
 			logger.Printf("error", "GetActionsByGlobalSeqs failed: %v", err)
 		}
+		return nil, nil, err
+	}
+	return actions, timings, nil
+}
+
+func fetchActionsByGlobalSeqs(reader corereader.Reader, globalSeqs []uint64, abiReader *abicache.Reader, omitNullFields bool, includeAccountSeq bool) ([]ActionResult, *corereader.FetchTimings, error) {
+	if len(globalSeqs) == 0 {
+		return []ActionResult{}, nil, nil
+	}
+
+	actions, timings, err := getActionsByGlobalSeqs(reader, globalSeqs)
+	if err != nil {
 		return nil, nil, err
 	}
 
@@ -166,4 +178,35 @@ func formatGlobSlice(globs []uint64) string {
 	}
 	sb.WriteString("]")
 	return sb.String()
+}
+
+func fetchLogEntriesByGlobalSeqs(reader corereader.Reader, globalSeqs []uint64, abiReader *abicache.Reader, omitNullFields bool) ([]LogEntry, *corereader.FetchTimings, error) {
+	if len(globalSeqs) == 0 {
+		return []LogEntry{}, nil, nil
+	}
+
+	actions, timings, err := getActionsByGlobalSeqs(reader, globalSeqs)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	results := make([]LogEntry, len(actions))
+
+	var wg sync.WaitGroup
+	for i, at := range actions {
+		wg.Add(1)
+		go func(idx int, at chain.ActionTrace) {
+			defer wg.Done()
+			results[idx] = LogEntry{
+				GlobalActionSeq: globalSeqs[idx],
+				BlockNum:        at.BlockNum,
+				BlockTime:       at.BlockTime,
+				Action:          buildAction(at.Act, abiReader, at.BlockNum, omitNullFields),
+				TrxID:           at.TrxID,
+			}
+		}(i, at)
+	}
+	wg.Wait()
+
+	return results, timings, nil
 }

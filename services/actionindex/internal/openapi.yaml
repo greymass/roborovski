@@ -242,6 +242,109 @@ paths:
               schema:
                 $ref: "#/components/schemas/AccountActivityErrorResponse"
 
+  /account/{account}/log:
+    get:
+      operationId: getAccountLog
+      summary: Get account action log
+      description: Retrieve a simplified action log for an account with cursor-based pagination. Returns minimal fields (global_action_seq, block_num, block_time, action, trx_id) for efficient data consumption.
+      tags:
+        - Account History
+      parameters:
+        - name: account
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Account name
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 100
+            maximum: 1000
+          description: Max results (1-1000)
+        - name: order
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: ["asc", "desc"]
+            default: "desc"
+          description: Sort order
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Pagination cursor
+        - name: contract
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter by contract
+        - name: action
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter by action (requires contract)
+        - name: date
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+          description: Single date filter (YYYY-MM-DD)
+        - name: start_date
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+          description: Date range start (YYYY-MM-DD)
+        - name: end_date
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+          description: Date range end (YYYY-MM-DD)
+        - name: decode
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: true
+          description: Decode action data using ABI
+        - name: trace
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+          description: Include query timing trace
+      responses:
+        "200":
+          description: Log entries found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountLogResponse"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountActivityErrorResponse"
+        "503":
+          description: Service unavailable (syncing)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountActivityErrorResponse"
+
   /account/{account}/stats:
     get:
       operationId: getAccountStats
@@ -818,6 +921,74 @@ components:
               type: string
             message:
               type: string
+
+    AccountLogResponse:
+      type: object
+      required:
+        - results
+      properties:
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/LogEntry"
+        next_cursor:
+          type: string
+          description: Cursor for next page
+        prev_cursor:
+          type: string
+          description: Cursor for previous page
+        trace:
+          type: object
+          description: Query trace information (if requested)
+
+    LogEntry:
+      type: object
+      description: Minimal action log entry
+      required:
+        - global_action_seq
+        - block_num
+        - block_time
+        - action
+        - trx_id
+      properties:
+        global_action_seq:
+          type: integer
+          format: uint64
+        block_num:
+          type: integer
+          format: uint32
+        block_time:
+          type: string
+        action:
+          type: object
+          required:
+            - account
+            - name
+            - authorization
+            - data
+            - hex_data
+          properties:
+            account:
+              type: string
+            name:
+              type: string
+            authorization:
+              type: array
+              items:
+                type: object
+                properties:
+                  actor:
+                    type: string
+                  permission:
+                    type: string
+            data:
+              oneOf:
+                - type: object
+                - type: string
+            hex_data:
+              type: string
+        trx_id:
+          type: string
 
     DebugAccountResponse:
       type: object

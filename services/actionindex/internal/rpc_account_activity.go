@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/greymass/roborovski/libraries/abicache"
-	"github.com/greymass/roborovski/libraries/chain"
 	"github.com/greymass/roborovski/libraries/corereader"
 	"github.com/greymass/roborovski/libraries/encoding"
 	"github.com/greymass/roborovski/libraries/logger"
@@ -60,251 +59,34 @@ func HandleAccountActivity(
 ) {
 	startTime := time.Now()
 
-	if indexes.IsBulkMode() {
-		libNum, _, _ := indexes.GetProperties()
-		_, chainLIB, _ := reader.GetStateProps(true)
-		pct := float64(0)
-		if chainLIB > 0 {
-			pct = float64(libNum) / float64(chainLIB) * 100
-		}
-		writeAccountActivityError(w, "service_unavailable",
-			fmt.Sprintf("service is syncing (%.1f%% complete, block %d/%d)", pct, libNum, chainLIB),
-			http.StatusServiceUnavailable)
+	q, ok := newAccountQuery(cfg, indexes, reader, abiReader, w, r, "/activity", "account_activity")
+	if !ok {
 		return
 	}
 
-	req, err := parseAccountActivityRequest(r)
-	if err != nil {
-		writeAccountActivityError(w, "invalid_request", err.Error(), http.StatusBadRequest)
+	if !q.execute() {
 		return
 	}
 
-	if req.accountName == "" {
-		writeAccountActivityError(w, "missing_account", "account name required in path", http.StatusBadRequest)
+	results, ok := q.fetchActions()
+	if !ok {
 		return
-	}
-
-	if req.Action != "" && req.Contract == "" {
-		writeAccountActivityError(w, "invalid_filter", "action filter requires contract to be specified", http.StatusBadRequest)
-		return
-	}
-
-	if req.Date != "" && (req.StartDate != "" || req.EndDate != "") {
-		writeAccountActivityError(w, "invalid_filter", "date parameter cannot be combined with start_date or end_date", http.StatusBadRequest)
-		return
-	}
-
-	if req.decodeExplicit && req.Decode && abiReader == nil {
-		writeAccountActivityError(w, "decode_unavailable", "decode=true requested but ABI data is not available", http.StatusBadRequest)
-		return
-	}
-
-	shouldDecode := abiReader != nil && req.Decode
-
-	account := chain.StringToName(req.accountName)
-
-	trace := querytrace.New("account_activity", req.accountName)
-
-	_, _, err = indexes.GetProperties()
-	if err != nil {
-		writeAccountActivityError(w, "internal_error", "failed to get database state", http.StatusInternalServerError)
-		return
-	}
-
-	dateRange, err := parseDateParam(req.Date, req.StartDate, req.EndDate)
-	if err != nil {
-		writeAccountActivityError(w, "invalid_date", err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	var cursor *ActivityCursor
-	if req.Cursor != "" {
-		cursor, err = decodeActivityCursor(req.Cursor)
-		if err != nil {
-			writeAccountActivityError(w, "invalid_cursor", fmt.Sprintf("invalid cursor: %v", err), http.StatusBadRequest)
-			return
-		}
-	}
-
-	queryFingerprint := computeAccountActivityFingerprint(req)
-	if cursor != nil && cursor.QueryFingerprint != queryFingerprint {
-		cursor = nil
-	}
-
-	order := req.Order
-	if cursor != nil {
-		order = cursor.Order
-	}
-	descending := order == "desc"
-	limit := int(req.Limit)
-
-	var globalSeqs []uint64
-	if cursor != nil {
-		globalSeqs, err = indexes.LoadActionsFromCursorWithDateRange(account, req.Contract, req.Action, cursor.GlobalSeq, dateRange, limit, descending, trace)
-	} else if dateRange != nil {
-		globalSeqs, err = indexes.LoadActionsWithDateRange(account, req.Contract, req.Action, dateRange, limit, descending, trace)
-	} else {
-		globalSeqs, err = indexes.LoadActions(account, req.Contract, req.Action, limit, descending, trace)
-	}
-	if err != nil {
-		writeAccountActivityError(w, "internal_error", "failed to load actions", http.StatusInternalServerError)
-		return
-	}
-
-	if cfg.Debug {
-		if len(globalSeqs) > 10 {
-			logger.Printf("debug", "[account_activity] account=%s loaded %d globalSeqs, first10=%v last10=%v",
-				req.accountName, len(globalSeqs), globalSeqs[:10], globalSeqs[len(globalSeqs)-10:])
-		} else {
-			logger.Printf("debug", "[account_activity] account=%s loaded %d globalSeqs: %v",
-				req.accountName, len(globalSeqs), globalSeqs)
-		}
-	}
-
-	if len(globalSeqs) == 0 {
-		trace.SetResult(0, "empty")
-		trace.Log()
-		response := AccountActivityResponse{
-			Results: []ActionResult{},
-		}
-		if req.Trace && trace.Enabled() {
-			response.Trace = trace.ToJSON()
-		}
-		writeJSON(w, response)
-		return
-	}
-
-	var sliceStart time.Time
-	if trace.Enabled() {
-		sliceStart = time.Now()
-	}
-	selectedSeqs := globalSeqs
-
-	// If we used a cursor with flipped order (backwards navigation), reverse results
-	// to match the originally requested order
-	if cursor != nil && cursor.Order != req.Order {
-		for i, j := 0, len(selectedSeqs)-1; i < j; i, j = i+1, j-1 {
-			selectedSeqs[i], selectedSeqs[j] = selectedSeqs[j], selectedSeqs[i]
-		}
-	}
-
-	if trace.Enabled() {
-		trace.AddStepWithCount("slice", "paginate", time.Since(sliceStart), len(selectedSeqs), fmt.Sprintf("order=%s", req.Order))
-	}
-
-	var effectiveAbiReader *abicache.Reader
-	if shouldDecode {
-		effectiveAbiReader = abiReader
-	}
-
-	reader.GetStateProps(true)
-
-	if cfg.Debug {
-		logger.Printf("debug", "[account_activity] account=%s fetching %d actions, selectedSeqs=%v",
-			req.accountName, len(selectedSeqs), selectedSeqs)
-	}
-
-	var fetchStart time.Time
-	var cacheHitsBefore, cacheMissesBefore uint64
-	if trace.Enabled() {
-		fetchStart = time.Now()
-		cacheHitsBefore, cacheMissesBefore, _, _ = reader.GetBlockCacheStats()
-	}
-	results, timings, err := fetchActionsByGlobalSeqs(reader, selectedSeqs, effectiveAbiReader, cfg.OmitNullFields, false)
-	if err != nil {
-		logger.Printf("error", "account_activity failed for account=%s contract=%s action=%s: %v", req.accountName, req.Contract, req.Action, err)
-		writeAccountActivityError(w, "internal_error", "failed to fetch actions", http.StatusInternalServerError)
-		return
-	}
-	if trace.Enabled() {
-		cacheHitsAfter, cacheMissesAfter, cacheSize, cacheBlocks := reader.GetBlockCacheStats()
-		hits := cacheHitsAfter - cacheHitsBefore
-		misses := cacheMissesAfter - cacheMissesBefore
-		details := fmt.Sprintf("cache=%d/%d size=%.1fMB blocks=%d", hits, hits+misses, float64(cacheSize)/(1024*1024), cacheBlocks)
-		if timings != nil {
-			details += fmt.Sprintf(" phase1=%v(a=%v b=%v c=%v) phase2=%v decompress=%v(%d) parse=%v(%d) match=%v",
-				timings.Phase1, timings.Phase1a, timings.Phase1b, timings.Phase1c,
-				timings.Phase2,
-				timings.DecompressTime, timings.DecompressCount,
-				timings.ParseTime, timings.ParseCount,
-				timings.MatchTime)
-		}
-		trace.AddStepWithCount("corereader", "fetch", time.Since(fetchStart), len(results), details)
 	}
 
 	response := AccountActivityResponse{
-		Results: results,
-	}
-
-	// Results are now always in req.Order (reversed if needed above)
-	// Generate cursors based on req.Order, not the cursor's query order
-	reqDescending := req.Order == "desc"
-
-	if len(results) > 0 && len(results) == limit {
-		lastSeq := selectedSeqs[len(selectedSeqs)-1]
-		nextCursor := &ActivityCursor{
-			GlobalSeq:        lastSeq,
-			Order:            req.Order,
-			QueryFingerprint: queryFingerprint,
-		}
-		response.NextCursor = encodeActivityCursor(nextCursor)
-	}
-
-	if cursor != nil && len(results) > 0 {
-		firstSeq := selectedSeqs[0]
-
-		// Check if we're at the first page based on req.Order.
-		// Results are already in req.Order, so:
-		// - For desc: firstSeq is highest, check for even higher seqs (ascending query)
-		// - For asc: firstSeq is lowest, check for even lower seqs (descending query)
-		boundarySeq := firstSeq
-		checkDescForBoundary := !reqDescending
-
-		var hasPrev bool
-		if dateRange != nil {
-			prevSeqs, _ := indexes.LoadActionsFromCursorWithDateRange(account, req.Contract, req.Action, boundarySeq, dateRange, 1, checkDescForBoundary, trace)
-			hasPrev = len(prevSeqs) > 0
-		} else {
-			prevSeqs, _ := indexes.LoadActionsFromCursor(account, req.Contract, req.Action, boundarySeq, 1, checkDescForBoundary, trace)
-			hasPrev = len(prevSeqs) > 0
-		}
-		if hasPrev {
-			prevOrder := "asc"
-			if req.Order == "asc" {
-				prevOrder = "desc"
-			}
-			prevCursor := &ActivityCursor{
-				GlobalSeq:        firstSeq,
-				Order:            prevOrder,
-				QueryFingerprint: queryFingerprint,
-			}
-			response.PrevCursor = encodeActivityCursor(prevCursor)
-		}
-	}
-
-	indexUsed := "AllActions"
-	if req.Contract != "" && req.Action != "" {
-		indexUsed = "ContractAction"
-	} else if req.Contract != "" {
-		indexUsed = "ContractWildcard"
-	}
-	if dateRange != nil {
-		indexUsed += "+DateRange"
-	}
-	trace.SetResult(len(results), indexUsed)
-	trace.Log()
-
-	if req.Trace && trace.Enabled() {
-		response.Trace = trace.ToJSON()
+		Results:    results,
+		NextCursor: q.nextCursor,
+		PrevCursor: q.prevCursor,
+		Trace:      q.finalize(len(results)),
 	}
 
 	writeJSON(w, response)
 
 	logger.Printf("timing", "account_activity account=%s contract=%s action=%s date=%s results=%d duration=%v",
-		req.accountName, req.Contract, req.Action, req.Date, len(results), time.Since(startTime))
+		q.req.accountName, q.req.Contract, q.req.Action, q.req.Date, len(results), time.Since(startTime))
 }
 
-func parseAccountActivityRequest(r *http.Request) (*AccountActivityRequest, error) {
+func parseAccountRequestWithSuffix(r *http.Request, suffix string) (*AccountActivityRequest, error) {
 	req := &AccountActivityRequest{
 		Limit:  100,
 		Order:  "desc",
@@ -312,7 +94,7 @@ func parseAccountActivityRequest(r *http.Request) (*AccountActivityRequest, erro
 	}
 
 	path := r.URL.Path
-	accountName := extractAccountFromPath(path)
+	accountName := extractAccountFromPath(path, suffix)
 	if accountName == "" {
 		return nil, fmt.Errorf("could not extract account name from path")
 	}
@@ -373,9 +155,9 @@ func parseAccountActivityRequest(r *http.Request) (*AccountActivityRequest, erro
 	return req, nil
 }
 
-func extractAccountFromPath(path string) string {
+func extractAccountFromPath(path, suffix string) string {
 	path = strings.TrimPrefix(path, "/account/")
-	path = strings.TrimSuffix(path, "/activity")
+	path = strings.TrimSuffix(path, suffix)
 	if path == "" || strings.Contains(path, "/") {
 		return ""
 	}
