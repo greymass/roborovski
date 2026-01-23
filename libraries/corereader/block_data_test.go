@@ -2,6 +2,7 @@ package corereader
 
 import (
 	"encoding/binary"
+	"hash/crc32"
 	"os"
 	"path/filepath"
 	"sync"
@@ -64,7 +65,8 @@ func TestReadBlockData_DoubleCheckLocking(t *testing.T) {
 	}
 
 	// Update index to include block 2
-	entries[2] = blockIndexEntry{Offset: uint64(len(block1) + 4), Size: uint32(len(block2))}
+	// Block format: 4-byte size + data + 4-byte CRC = 8 + len(data)
+	entries[2] = blockIndexEntry{Offset: uint64(len(block1) + 8), Size: uint32(len(block2))}
 	if err := writeBlockIndexMap(blockIndexPath, entries); err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +127,7 @@ func TestReadBlockData_ConcurrentIndexReload(t *testing.T) {
 	for i := uint32(1); i <= 5; i++ {
 		size := uint32(10) // "blockdataX" = 10 bytes
 		entries[i] = blockIndexEntry{Offset: offset, Size: size}
-		offset += uint64(size + 4) // +4 for size prefix
+		offset += uint64(size + 8) // +4 for size prefix, +4 for CRC suffix
 	}
 
 	blockIndexPath := filepath.Join(slicePath, "blocks.index")
@@ -230,13 +232,18 @@ func TestReadBlockData_CompressedBlock(t *testing.T) {
 	compressedData := encoder.EncodeAll(originalData, nil)
 	encoder.Close()
 
-	// Write compressed block with size prefix
+	// Write compressed block with size prefix and CRC suffix
 	sizePrefix := make([]byte, 4)
 	binary.LittleEndian.PutUint32(sizePrefix, uint32(len(compressedData)))
 	if _, err := f.Write(sizePrefix); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.Write(compressedData); err != nil {
+		t.Fatal(err)
+	}
+	crcSuffix := make([]byte, 4)
+	binary.LittleEndian.PutUint32(crcSuffix, crc32.ChecksumIEEE(compressedData))
+	if _, err := f.Write(crcSuffix); err != nil {
 		t.Fatal(err)
 	}
 	f.Close()
@@ -294,6 +301,12 @@ func TestReadBlockData_CorruptedCompressedBlock(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := f.Write(corruptData); err != nil {
+		t.Fatal(err)
+	}
+	// Write CRC suffix (valid CRC of corrupt data - CRC passes, decompression fails)
+	crcSuffix := make([]byte, 4)
+	binary.LittleEndian.PutUint32(crcSuffix, crc32.ChecksumIEEE(corruptData))
+	if _, err := f.Write(crcSuffix); err != nil {
 		t.Fatal(err)
 	}
 	f.Close()
@@ -1086,7 +1099,7 @@ func createBlockDataWithTxIDs(blockNum uint32, globCount uint64, txIDs [][32]byt
 	return buf
 }
 
-// writeBlockToLog writes a block to data.log with 4-byte size prefix
+// writeBlockToLog writes a block to data.log with 4-byte size prefix and 4-byte CRC32 suffix
 func writeBlockToLog(f *os.File, blockData []byte) error {
 	sizePrefix := make([]byte, 4)
 	binary.LittleEndian.PutUint32(sizePrefix, uint32(len(blockData)))
@@ -1094,6 +1107,11 @@ func writeBlockToLog(f *os.File, blockData []byte) error {
 		return err
 	}
 	if _, err := f.Write(blockData); err != nil {
+		return err
+	}
+	crcSuffix := make([]byte, 4)
+	binary.LittleEndian.PutUint32(crcSuffix, crc32.ChecksumIEEE(blockData))
+	if _, err := f.Write(crcSuffix); err != nil {
 		return err
 	}
 	return nil

@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"hash/crc32"
 	"os"
 	"path/filepath"
 	"sort"
@@ -2147,31 +2148,96 @@ func (r *sliceReader) readBlockData(blockNum uint32) ([]byte, error) {
 
 		r.mu.RLock()
 	}
+	r.mu.RUnlock()
 
-	offset := int64(entry.Offset) + 4 // Skip size prefix
-	endOffset := offset + int64(entry.Size)
+	dataOffset := int64(entry.Offset) + 4
+	dataEndOffset := dataOffset + int64(entry.Size)
 
-	if r.mmapData == nil || endOffset > int64(len(r.mmapData)) {
+	isFinalized := r.header != nil && r.header.IsFinalized()
+
+	var data []byte
+
+	if isFinalized {
+		r.mu.RLock()
+		needsRemap := r.mmapData == nil || dataEndOffset > int64(len(r.mmapData))
 		r.mu.RUnlock()
 
-		r.mu.Lock()
-		if endOffset > int64(len(r.mmapData)) {
-			if err := r.remapDataLog(); err != nil {
-				r.mu.Unlock()
-				return nil, fmt.Errorf("block %d extends beyond mmap bounds and remap failed: %w", blockNum, err)
+		if needsRemap {
+			r.mu.Lock()
+			if r.mmapData == nil || dataEndOffset > int64(len(r.mmapData)) {
+				if err := r.remapDataLog(); err != nil {
+					r.mu.Unlock()
+					return nil, fmt.Errorf("block %d extends beyond mmap bounds and remap failed: %w", blockNum, err)
+				}
+				if dataEndOffset > int64(len(r.mmapData)) {
+					r.mu.Unlock()
+					return nil, fmt.Errorf("block %d extends beyond mmap bounds after remap", blockNum)
+				}
 			}
-			if endOffset > int64(len(r.mmapData)) {
-				r.mu.Unlock()
-				return nil, fmt.Errorf("block %d still extends beyond mmap bounds after remap", blockNum)
-			}
+			r.mu.Unlock()
 		}
-		r.mu.Unlock()
 
 		r.mu.RLock()
-	}
+		rawData := r.mmapData[dataOffset:dataEndOffset]
+		data = make([]byte, len(rawData))
+		copy(data, rawData)
+		r.mu.RUnlock()
+	} else {
+		const maxCRCRetries = 3
+		const crcRetryDelay = 50 * time.Millisecond
 
-	data := r.mmapData[offset:endOffset]
-	r.mu.RUnlock()
+		crcOffset := dataEndOffset
+		endOffset := crcOffset + 4
+
+		for retry := 0; retry < maxCRCRetries; retry++ {
+			r.mu.RLock()
+			needsRemap := r.mmapData == nil || endOffset > int64(len(r.mmapData))
+			r.mu.RUnlock()
+
+			if needsRemap {
+				r.mu.Lock()
+				if r.mmapData == nil || endOffset > int64(len(r.mmapData)) {
+					if err := r.remapDataLog(); err != nil {
+						r.mu.Unlock()
+						return nil, fmt.Errorf("block %d extends beyond mmap bounds and remap failed: %w", blockNum, err)
+					}
+					if endOffset > int64(len(r.mmapData)) {
+						r.mu.Unlock()
+						if retry < maxCRCRetries-1 {
+							time.Sleep(crcRetryDelay)
+							continue
+						}
+						return nil, fmt.Errorf("block %d CRC extends beyond mmap bounds after remap", blockNum)
+					}
+				}
+				r.mu.Unlock()
+			}
+
+			r.mu.RLock()
+			rawData := r.mmapData[dataOffset:crcOffset]
+			storedCRC := binary.LittleEndian.Uint32(r.mmapData[crcOffset:endOffset])
+			r.mu.RUnlock()
+
+			calculatedCRC := crc32.ChecksumIEEE(rawData)
+			if calculatedCRC == storedCRC {
+				data = make([]byte, len(rawData))
+				copy(data, rawData)
+				break
+			}
+
+			if retry < maxCRCRetries-1 {
+				logger.Printf("warning", "Block %d CRC mismatch in slice %d (stored=%08x calc=%08x), retrying (%d/%d)",
+					blockNum, r.sliceNum, storedCRC, calculatedCRC, retry+1, maxCRCRetries)
+				time.Sleep(crcRetryDelay)
+				r.mu.Lock()
+				r.remapDataLog()
+				r.mu.Unlock()
+			} else {
+				return nil, fmt.Errorf("block %d CRC mismatch in slice %d after %d retries (stored=%08x calc=%08x)",
+					blockNum, r.sliceNum, maxCRCRetries, storedCRC, calculatedCRC)
+			}
+		}
+	}
 
 	if len(data) >= 4 && binary.LittleEndian.Uint32(data[0:4]) == 0xFD2FB528 {
 		decompressed, err := compression.ZstdDecompress(nil, data)
@@ -2181,9 +2247,7 @@ func (r *sliceReader) readBlockData(blockNum uint32) ([]byte, error) {
 		return decompressed, nil
 	}
 
-	copied := make([]byte, len(data))
-	copy(copied, data)
-	return copied, nil
+	return data, nil
 }
 
 func (r *sliceReader) binarySearchGlob(glob uint64) (uint32, error) {

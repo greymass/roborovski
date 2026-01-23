@@ -1,6 +1,8 @@
 package corereader
 
 import (
+	"encoding/binary"
+	"hash/crc32"
 	"os"
 	"path/filepath"
 	"sync"
@@ -342,22 +344,26 @@ func TestReadBlockData_IndexReloadOnMiss(t *testing.T) {
 	dataLogPath := filepath.Join(slicePath, "data.log")
 	block1Data := []byte("block1data")
 
-	// Write with size prefix
+	// Write with size prefix and CRC suffix
 	f, err := os.Create(dataLogPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Size prefix (4 bytes)
 	sizePrefix := make([]byte, 4)
-	sizePrefix[0] = byte(len(block1Data))
-	sizePrefix[1] = byte(len(block1Data) >> 8)
-	sizePrefix[2] = byte(len(block1Data) >> 16)
-	sizePrefix[3] = byte(len(block1Data) >> 24)
+	binary.LittleEndian.PutUint32(sizePrefix, uint32(len(block1Data)))
 	if _, err := f.Write(sizePrefix); err != nil {
 		f.Close()
 		t.Fatal(err)
 	}
 	if _, err := f.Write(block1Data); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	// CRC suffix (4 bytes)
+	crcSuffix := make([]byte, 4)
+	binary.LittleEndian.PutUint32(crcSuffix, crc32.ChecksumIEEE(block1Data))
+	if _, err := f.Write(crcSuffix); err != nil {
 		f.Close()
 		t.Fatal(err)
 	}
@@ -439,7 +445,7 @@ func TestReadBlockData_CompressionDetection(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Create data.log with uncompressed data (with 4-byte size prefix)
+	// Create data.log with uncompressed data (with 4-byte size prefix and 4-byte CRC suffix)
 	dataLogPath := filepath.Join(slicePath, "data.log")
 	uncompressedData := []byte("uncompressed block data")
 
@@ -449,15 +455,19 @@ func TestReadBlockData_CompressionDetection(t *testing.T) {
 	}
 	// Size prefix (4 bytes)
 	sizePrefix := make([]byte, 4)
-	sizePrefix[0] = byte(len(uncompressedData))
-	sizePrefix[1] = byte(len(uncompressedData) >> 8)
-	sizePrefix[2] = byte(len(uncompressedData) >> 16)
-	sizePrefix[3] = byte(len(uncompressedData) >> 24)
+	binary.LittleEndian.PutUint32(sizePrefix, uint32(len(uncompressedData)))
 	if _, err := f.Write(sizePrefix); err != nil {
 		f.Close()
 		t.Fatal(err)
 	}
 	if _, err := f.Write(uncompressedData); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	// CRC suffix (4 bytes)
+	crcSuffix := make([]byte, 4)
+	binary.LittleEndian.PutUint32(crcSuffix, crc32.ChecksumIEEE(uncompressedData))
+	if _, err := f.Write(crcSuffix); err != nil {
 		f.Close()
 		t.Fatal(err)
 	}
