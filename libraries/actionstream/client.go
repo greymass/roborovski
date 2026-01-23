@@ -36,6 +36,7 @@ type ClientConfig struct {
 	ReconnectMaxDelay time.Duration
 	AckInterval       uint64
 	Debug             bool
+	Decode            bool
 }
 
 func DefaultClientConfig() ClientConfig {
@@ -185,6 +186,10 @@ func (c *Client) dial() error {
 	return nil
 }
 
+const (
+	FlagDecode uint8 = 0x01
+)
+
 func (c *Client) sendSubscribe(conn net.Conn, startFrom uint64) error {
 	payloadSize := 15 + len(c.filter.Contracts)*8 + len(c.filter.Receivers)*8 + len(c.filter.Actions)*8
 	payload := make([]byte, payloadSize)
@@ -193,7 +198,12 @@ func (c *Client) sendSubscribe(conn net.Conn, startFrom uint64) error {
 	binary.LittleEndian.PutUint16(payload[8:10], uint16(len(c.filter.Contracts)))
 	binary.LittleEndian.PutUint16(payload[10:12], uint16(len(c.filter.Receivers)))
 	binary.LittleEndian.PutUint16(payload[12:14], uint16(len(c.filter.Actions)))
-	payload[14] = 0x00
+
+	var flags uint8
+	if c.config.Decode {
+		flags |= FlagDecode
+	}
+	payload[14] = flags
 
 	offset := 15
 	for _, contract := range c.filter.Contracts {
