@@ -3,6 +3,7 @@ package internal
 import (
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -268,7 +269,21 @@ func (ts *StreamTCPServer) decodeSubscribe(payload []byte) (ActionFilter, uint64
 }
 
 func (ts *StreamTCPServer) sendAction(conn net.Conn, action StreamedAction, decode bool) error {
-	payload := make([]byte, 40+len(action.ActionData))
+	actionData := action.ActionData
+	msgType := MsgTypeActionBatch
+
+	if decode && ts.server.abiReader != nil && len(action.ActionData) > 0 {
+		decoded, err := ts.server.abiReader.Decode(
+			action.Contract, action.Action, action.ActionData, action.BlockNum)
+		if err == nil && decoded != nil {
+			if jsonBytes, err := json.Marshal(decoded); err == nil {
+				actionData = jsonBytes
+				msgType = MsgTypeActionDecoded
+			}
+		}
+	}
+
+	payload := make([]byte, 40+len(actionData))
 
 	binary.LittleEndian.PutUint64(payload[0:8], action.GlobalSeq)
 	binary.LittleEndian.PutUint32(payload[8:12], action.BlockNum)
@@ -276,12 +291,7 @@ func (ts *StreamTCPServer) sendAction(conn net.Conn, action StreamedAction, deco
 	binary.LittleEndian.PutUint64(payload[16:24], action.Contract)
 	binary.LittleEndian.PutUint64(payload[24:32], action.Action)
 	binary.LittleEndian.PutUint64(payload[32:40], action.Receiver)
-	copy(payload[40:], action.ActionData)
-
-	msgType := MsgTypeActionBatch
-	if decode {
-		msgType = MsgTypeActionDecoded
-	}
+	copy(payload[40:], actionData)
 
 	return ts.writeMessage(conn, msgType, payload)
 }
