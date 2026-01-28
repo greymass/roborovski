@@ -34,6 +34,7 @@ const (
 type ClientConfig struct {
 	ReconnectDelay    time.Duration
 	ReconnectMaxDelay time.Duration
+	KeepaliveInterval time.Duration
 	AckInterval       uint64
 	Debug             bool
 	Decode            bool
@@ -43,6 +44,7 @@ func DefaultClientConfig() ClientConfig {
 	return ClientConfig{
 		ReconnectDelay:    1 * time.Second,
 		ReconnectMaxDelay: 30 * time.Second,
+		KeepaliveInterval: 30 * time.Second,
 		AckInterval:       1000,
 		Debug:             false,
 	}
@@ -109,8 +111,9 @@ func (c *Client) Connect() error {
 		return err
 	}
 
-	c.wg.Add(1)
+	c.wg.Add(2)
 	go c.recvLoop()
+	go c.keepaliveLoop()
 
 	return nil
 }
@@ -179,9 +182,7 @@ func (c *Client) dial() error {
 	c.conn = conn
 	c.connected.Store(true)
 
-	if c.config.Debug {
-		logger.Printf("actionstream", "Connected to %s, starting from seq %d", c.address, startFrom)
-	}
+	logger.Printf("sync", "Connected to %s, starting from seq %d", c.address, startFrom)
 
 	return nil
 }
@@ -236,12 +237,12 @@ func (c *Client) recvLoop() {
 
 		if !c.connected.Load() {
 			if c.config.Debug {
-				logger.Printf("actionstream", "Not connected, attempting reconnect in %v", reconnectDelay)
+				logger.Printf("sync", "Not connected, attempting reconnect in %v", reconnectDelay)
 			}
 			time.Sleep(reconnectDelay)
 			if err := c.dial(); err != nil {
 				if c.config.Debug {
-					logger.Printf("actionstream", "Reconnect failed: %v", err)
+					logger.Printf("sync", "Reconnect failed: %v", err)
 				}
 				reconnectDelay = reconnectDelay * 2
 				if reconnectDelay > c.config.ReconnectMaxDelay {
@@ -250,7 +251,7 @@ func (c *Client) recvLoop() {
 				continue
 			}
 			if c.config.Debug {
-				logger.Printf("actionstream", "Reconnected successfully")
+				logger.Printf("sync", "Reconnected successfully")
 			}
 			reconnectDelay = c.config.ReconnectDelay
 		}
@@ -268,7 +269,7 @@ func (c *Client) recvLoop() {
 		msgType, payload, err := c.readMessage(conn)
 		if err != nil {
 			if c.config.Debug {
-				logger.Printf("actionstream", "Read error: %v, will reconnect", err)
+				logger.Printf("sync", "Read error: %v, will reconnect", err)
 			}
 			c.connected.Store(false)
 			conn.Close()
@@ -303,15 +304,52 @@ func (c *Client) recvLoop() {
 				c.libSeq.Store(binary.LittleEndian.Uint64(payload[8:16]))
 			}
 			c.catchupComplete.Store(true)
-			if c.config.Debug {
-				logger.Printf("actionstream", "Catchup complete, headSeq=%d, libSeq=%d", c.headSeq.Load(), c.libSeq.Load())
-			}
+			logger.Printf("sync", "Catchup complete, headSeq=%d, libSeq=%d", c.headSeq.Load(), c.libSeq.Load())
 
 		case MsgTypeActionError:
 			errMsg := c.decodeError(payload)
 			logger.Warning("Server error: %s", errMsg)
 		}
 	}
+}
+
+func (c *Client) keepaliveLoop() {
+	defer c.wg.Done()
+
+	interval := c.config.KeepaliveInterval
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-c.closeChan:
+			return
+		case <-ticker.C:
+			if !c.connected.Load() {
+				continue
+			}
+			c.sendKeepalive()
+		}
+	}
+}
+
+func (c *Client) sendKeepalive() {
+	c.connMu.Lock()
+	conn := c.conn
+	c.connMu.Unlock()
+
+	if conn == nil {
+		return
+	}
+
+	// Send an empty heartbeat message
+	payload := make([]byte, 16)
+	// Leave payload as zeros - server just needs to receive something
+	c.writeMessage(conn, MsgTypeActionHeartbeat, payload)
 }
 
 func (c *Client) Next() (Action, error) {
