@@ -821,6 +821,14 @@ func (s *SliceStore) Sync() error {
 	return s.saveState()
 }
 
+// SaveActiveSliceIndices saves the active slice's block index to disk with fsync.
+// Call this before broadcasting blocks to ensure queries can find them.
+func (s *SliceStore) SaveActiveSliceIndices() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sliceManager.SaveActiveSliceIndices()
+}
+
 // Close closes the store and saves indices
 func (s *SliceStore) Close() error {
 	s.mu.Lock()

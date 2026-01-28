@@ -636,6 +636,19 @@ func (sm *SliceManager) Sync() error {
 	return sm.saveSliceInfos()
 }
 
+// SaveActiveSliceIndices saves the active slice's block index to disk with fsync.
+// This ensures queries can find blocks that are about to be broadcast.
+func (sm *SliceManager) SaveActiveSliceIndices() error {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	if sm.activeSlice == nil {
+		return nil
+	}
+
+	return sm.activeSlice.SaveIndices()
+}
+
 // Close closes all slices
 func (sm *SliceManager) Close() error {
 	sm.mu.Lock()

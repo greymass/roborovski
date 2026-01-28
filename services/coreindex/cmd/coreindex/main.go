@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log"
 	"fmt"
 	"net/http"
 	_ "net/http/pprof"
@@ -619,6 +620,11 @@ func syncFromTraceFiles(config *server.Config, traceConfig *tracereader.Config, 
 			atomic.AddInt64(&totalStorageNs, tElapsed.Nanoseconds())
 
 			if err == nil && broadcast != nil {
+				if ss, ok := store.(*appendlog.SliceStore); ok {
+					if syncErr := ss.SaveActiveSliceIndices(); syncErr != nil {
+						log.Printf("Warning: failed to save block indices before broadcast: %v", syncErr)
+					}
+				}
 				for _, entry := range batch.entries {
 					broadcast(entry.BlockNum, entry.Data)
 				}

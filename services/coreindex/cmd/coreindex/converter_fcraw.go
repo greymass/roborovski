@@ -1,15 +1,31 @@
 package main
 
 import (
+	"encoding/hex"
+	"fmt"
+	"runtime/debug"
+
 	"github.com/greymass/roborovski/libraries/chain"
 	"github.com/greymass/roborovski/libraries/fcraw"
 )
 
 // convertRawBlockToActionsBuffered converts raw fcraw bytes to actionTraceOptimized.
 // The returned data is only valid until bufs.Reset() is called.
-func convertRawBlockToActionsBuffered(rawBytes []byte, bufs *WorkerBuffers) ([]actionTraceOptimized, *blockData, map[[32]byte]uint32, error) {
+func convertRawBlockToActionsBuffered(rawBytes []byte, bufs *WorkerBuffers) (actions []actionTraceOptimized, blkData *blockData, trxIDMap map[[32]byte]uint32, retErr error) {
 	bufs.Reset()
 	bufs.ResetConverterPools()
+
+	defer func() {
+		if r := recover(); r != nil {
+			hexDump := hex.Dump(rawBytes)
+			if len(hexDump) > 2000 {
+				hexDump = hexDump[:2000] + "\n... (truncated)"
+			}
+			retErr = fmt.Errorf("panic decoding block (rawLen=%d): %v\nraw data hex dump:\n%s\nstack:\n%s",
+				len(rawBytes), r, hexDump, debug.Stack())
+		}
+	}()
+
 	dec := fcraw.NewSliceDecoder(rawBytes)
 
 	variant := dec.ReadVariantIndex()
@@ -43,7 +59,7 @@ func convertRawBlockToActionsBuffered(rawBytes []byte, bufs *WorkerBuffers) ([]a
 	var pbib [32]byte
 	copy(pbib[:], bt.ID[:])
 
-	blkData := &blockData{
+	blkData = &blockData{
 		BlockNum:        blockNum,
 		BlockTime:       blockTimeStr,
 		ProducerBlockID: pbib,
@@ -53,8 +69,8 @@ func convertRawBlockToActionsBuffered(rawBytes []byte, bufs *WorkerBuffers) ([]a
 		DataInBlock:     make([][]byte, 0, totalActions),
 	}
 
-	actions := bufs.AllocActions(totalActions)
-	trxIDToIndex := make(map[[32]byte]uint32, numTrx)
+	actions = bufs.AllocActions(totalActions)
+	trxIDMap = make(map[[32]byte]uint32, numTrx)
 
 	if bt.TransactionsVariant == 0 {
 		for txIdx := range bt.TransactionsV2 {
@@ -63,7 +79,7 @@ func convertRawBlockToActionsBuffered(rawBytes []byte, bufs *WorkerBuffers) ([]a
 			index := uint32(len(blkData.TrxIDInBlock))
 			blkData.TrxIDInBlock = append(blkData.TrxIDInBlock, tx.ID)
 			blkData.TrxMetaInBlock = append(blkData.TrxMetaInBlock, extractTrxMeta(tx))
-			trxIDToIndex[tx.ID] = index
+			trxIDMap[tx.ID] = index
 
 			for actIdx := range tx.Actions {
 				act := &tx.Actions[actIdx]
@@ -80,7 +96,7 @@ func convertRawBlockToActionsBuffered(rawBytes []byte, bufs *WorkerBuffers) ([]a
 			index := uint32(len(blkData.TrxIDInBlock))
 			blkData.TrxIDInBlock = append(blkData.TrxIDInBlock, tx.ID)
 			blkData.TrxMetaInBlock = append(blkData.TrxMetaInBlock, extractTrxMeta(tx))
-			trxIDToIndex[tx.ID] = index
+			trxIDMap[tx.ID] = index
 
 			for actIdx := range tx.Actions {
 				act := &tx.Actions[actIdx]
@@ -93,7 +109,7 @@ func convertRawBlockToActionsBuffered(rawBytes []byte, bufs *WorkerBuffers) ([]a
 
 	bufs.ActionsBuffer = actions
 
-	return actions, blkData, trxIDToIndex, nil
+	return actions, blkData, trxIDMap, nil
 }
 
 func convertFcrawActionToOptimizedBuffered(
