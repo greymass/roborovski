@@ -218,14 +218,10 @@ func TestFindSliceForBlock_StaleMetadata(t *testing.T) {
 // =============================================================================
 
 func TestFindSliceForGlob_NoIndex(t *testing.T) {
-	storageDir := getTestDataPath()
-	if _, err := os.Stat(storageDir); os.IsNotExist(err) {
-		t.Skip("Test data not available")
-	}
+	emptyDir := t.TempDir()
 
-	// Create reader without loading indexes
 	sr := &SliceReader{
-		basePath: storageDir,
+		basePath: emptyDir,
 		sharedMetadata: &SharedSliceMetadata{
 			slices: []SliceInfo{},
 		},
@@ -234,10 +230,9 @@ func TestFindSliceForGlob_NoIndex(t *testing.T) {
 		globRangeIndex:  nil,
 	}
 
-	// Try to find glob without any index (should use legacy fallback)
 	_, err := sr.findSliceForGlob(1000)
 	if err == nil {
-		t.Error("Expected error when no indexes available and no slices")
+		t.Error("Expected error when no indexes available and no slices on disk")
 	}
 }
 
