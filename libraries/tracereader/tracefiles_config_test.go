@@ -413,7 +413,7 @@ func TestGetRawBlocksWithMetadata_FoundWithTraceFile(t *testing.T) {
 		t.Fatalf("Failed to create trace file: %v", err)
 	}
 
-	rawBlocks, err := GetRawBlocksWithMetadata(100, 2, conf)
+	rawBlocks, err := GetRawBlocksWithMetadata(100, 1, conf)
 	if err != nil {
 		t.Fatalf("GetRawBlocksWithMetadata() error = %v", err)
 	}

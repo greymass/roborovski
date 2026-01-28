@@ -195,6 +195,12 @@ func GetRawBlocksWithMetadata(blockNum uint32, limit int, conf *Config) ([]RawBl
 	}
 	defer slice.Close()
 
+	sliceInfo, err := slice.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("failed to stat trace file: %w", err)
+	}
+	traceFileSize := sliceInfo.Size()
+
 	rawBlocks := make([]RawBlockData, numBlocks)
 
 	for i := 0; i < numBlocks; i++ {
@@ -202,23 +208,40 @@ func GetRawBlocksWithMetadata(blockNum uint32, limit int, conf *Config) ([]RawBl
 		if i+1 < len(offsets) {
 			blockSize = offsets[i+1] - offsets[i]
 		} else {
-			blockSize = 10 * 1024 * 1024
+			blockSize = uint64(traceFileSize) - offsets[i]
+		}
+
+		currentBlockNum := blockNum + uint32(i)
+
+		if int64(offsets[i]) >= traceFileSize {
+			return nil, fmt.Errorf("block %d: offset %d exceeds trace file size %d (stride=%s)",
+				currentBlockNum, offsets[i], traceFileSize, stride)
+		}
+
+		if int64(offsets[i]+blockSize) > traceFileSize {
+			actualAvailable := traceFileSize - int64(offsets[i])
+			return nil, fmt.Errorf("block %d: expected %d bytes at offset %d but only %d bytes available in trace file (size=%d, stride=%s)",
+				currentBlockNum, blockSize, offsets[i], actualAvailable, traceFileSize, stride)
 		}
 
 		_, err = slice.Seek(int64(offsets[i]), io.SeekStart)
 		if err != nil {
-			return nil, fmt.Errorf("failed to seek to block %d offset %d: %w", i, offsets[i], err)
+			return nil, fmt.Errorf("failed to seek to block %d offset %d: %w", currentBlockNum, offsets[i], err)
 		}
 
 		rawBytes := make([]byte, blockSize)
 		n, err := slice.Read(rawBytes)
 		if err != nil && err != io.EOF {
-			return nil, fmt.Errorf("failed to read raw bytes for block %d: %w", i, err)
+			return nil, fmt.Errorf("failed to read raw bytes for block %d: %w", currentBlockNum, err)
 		}
-		rawBytes = rawBytes[:n]
+
+		if uint64(n) != blockSize {
+			return nil, fmt.Errorf("block %d: read %d bytes but expected %d (offset=%d, fileSize=%d, stride=%s)",
+				currentBlockNum, n, blockSize, offsets[i], traceFileSize, stride)
+		}
 
 		rawBlocks[i] = RawBlockData{
-			BlockNum: blockNum + uint32(i),
+			BlockNum: currentBlockNum,
 			RawBytes: rawBytes,
 		}
 	}
