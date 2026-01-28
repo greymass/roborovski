@@ -205,6 +205,7 @@ func NewStore(path string, readOnly bool, cfg StoreConfig) (*Store, error) {
 		LBaseMaxBytes:               64 << 20,
 	}
 
+	opts.CompactionConcurrencyRange = func() (int, int) { return 1, compactors }
 	opts.Experimental.L0CompactionConcurrency = compactors
 	opts.Experimental.CompactionDebtConcurrency = 1 << 30
 

@@ -58,7 +58,7 @@ func main() {
 			filter = append(filter, "debug-timing", "debug-chunks")
 		}
 		if cfg.QueryTrace {
-			filter = append(filter, "debug-query", "debug-perf")
+			filter = append(filter, "debug-query", "debug-perf", "debug-stream", "stream")
 		}
 		logger.SetCategoryFilter(filter)
 	} else {
