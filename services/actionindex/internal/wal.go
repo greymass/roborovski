@@ -9,6 +9,14 @@ import (
 	"github.com/greymass/roborovski/libraries/logger"
 )
 
+// walEntryKey uniquely identifies a WAL entry by account and globalSeq.
+// The same action (globalSeq) can be indexed for multiple accounts
+// (e.g., sender and receiver of a transfer).
+type walEntryKey struct {
+	Account   uint64
+	GlobalSeq uint64
+}
+
 // WALIndex maintains an in-memory index of WAL entries for O(1) lookups.
 // This avoids expensive Pebble iterator seeks (~90ms) on every query.
 // The index is populated at startup and kept in sync by WALWriter/WALCompactor.
@@ -24,8 +32,8 @@ type WALIndex struct {
 	// Index by (account, contract) for ContractWildcard queries
 	byContractWildcard map[ContractWildcardKey][]uint64
 
-	// Full entry data needed for compaction
-	entries map[uint64]WALEntry // globalSeq -> entry
+	// Full entry data needed for compaction, keyed by (account, globalSeq)
+	entries map[walEntryKey]WALEntry
 }
 
 func NewWALIndex() *WALIndex {
@@ -33,7 +41,7 @@ func NewWALIndex() *WALIndex {
 		byAccount:          make(map[uint64][]uint64),
 		byContractAction:   make(map[ContractActionKey][]uint64),
 		byContractWildcard: make(map[ContractWildcardKey][]uint64),
-		entries:            make(map[uint64]WALEntry),
+		entries:            make(map[walEntryKey]WALEntry),
 	}
 }
 
@@ -58,7 +66,7 @@ func (idx *WALIndex) LoadFromDB(db *pebble.DB) error {
 
 	var count int
 	for iter.First(); iter.Valid(); iter.Next() {
-		globalSeq, ok := parseWALKey(iter.Key())
+		globalSeq, keyAccount, ok := parseWALKey(iter.Key())
 		if !ok {
 			continue
 		}
@@ -66,6 +74,11 @@ func (idx *WALIndex) LoadFromDB(db *pebble.DB) error {
 		account, contract, action, ok := parseWALValue(iter.Value())
 		if !ok {
 			continue
+		}
+
+		// Use account from key if available (new format), otherwise from value (legacy)
+		if keyAccount != 0 {
+			account = keyAccount
 		}
 
 		idx.addLocked(WALEntry{
@@ -89,11 +102,12 @@ func (idx *WALIndex) Add(e WALEntry) {
 }
 
 func (idx *WALIndex) addLocked(e WALEntry) {
-	if _, exists := idx.entries[e.GlobalSeq]; exists {
-		return // Already indexed
+	key := walEntryKey{Account: e.Account, GlobalSeq: e.GlobalSeq}
+	if _, exists := idx.entries[key]; exists {
+		return // Already indexed for this account
 	}
 
-	idx.entries[e.GlobalSeq] = e
+	idx.entries[key] = e
 	idx.byAccount[e.Account] = append(idx.byAccount[e.Account], e.GlobalSeq)
 
 	caKey := ContractActionKey{Account: e.Account, Contract: e.Contract, Action: e.Action}
@@ -103,31 +117,34 @@ func (idx *WALIndex) addLocked(e WALEntry) {
 	idx.byContractWildcard[cwKey] = append(idx.byContractWildcard[cwKey], e.GlobalSeq)
 }
 
-// Remove deletes WAL entries by globalSeq from all indexes.
-func (idx *WALIndex) Remove(globalSeqs []uint64) {
-	if len(globalSeqs) == 0 {
+// RemoveEntries deletes WAL entries by their keys from all indexes.
+func (idx *WALIndex) RemoveEntries(entries []WALEntry) {
+	if len(entries) == 0 {
 		return
 	}
 
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 
-	toRemove := make(map[uint64]struct{}, len(globalSeqs))
-	for _, seq := range globalSeqs {
-		toRemove[seq] = struct{}{}
-	}
+	// Build a map of seqs to remove per account for efficient filtering
+	toRemoveByAccount := make(map[uint64]map[uint64]struct{})
 
 	// Collect affected keys for each index
 	affectedAccounts := make(map[uint64]struct{})
 	affectedCA := make(map[ContractActionKey]struct{})
 	affectedCW := make(map[ContractWildcardKey]struct{})
 
-	for _, seq := range globalSeqs {
-		e, exists := idx.entries[seq]
-		if !exists {
+	for _, e := range entries {
+		key := walEntryKey{Account: e.Account, GlobalSeq: e.GlobalSeq}
+		if _, exists := idx.entries[key]; !exists {
 			continue
 		}
-		delete(idx.entries, seq)
+		delete(idx.entries, key)
+
+		if toRemoveByAccount[e.Account] == nil {
+			toRemoveByAccount[e.Account] = make(map[uint64]struct{})
+		}
+		toRemoveByAccount[e.Account][e.GlobalSeq] = struct{}{}
 
 		affectedAccounts[e.Account] = struct{}{}
 		affectedCA[ContractActionKey{Account: e.Account, Contract: e.Contract, Action: e.Action}] = struct{}{}
@@ -136,6 +153,7 @@ func (idx *WALIndex) Remove(globalSeqs []uint64) {
 
 	// Rebuild affected slices by filtering out removed seqs
 	for account := range affectedAccounts {
+		toRemove := toRemoveByAccount[account]
 		idx.byAccount[account] = filterSeqs(idx.byAccount[account], toRemove)
 		if len(idx.byAccount[account]) == 0 {
 			delete(idx.byAccount, account)
@@ -143,6 +161,7 @@ func (idx *WALIndex) Remove(globalSeqs []uint64) {
 	}
 
 	for key := range affectedCA {
+		toRemove := toRemoveByAccount[key.Account]
 		idx.byContractAction[key] = filterSeqs(idx.byContractAction[key], toRemove)
 		if len(idx.byContractAction[key]) == 0 {
 			delete(idx.byContractAction, key)
@@ -150,6 +169,7 @@ func (idx *WALIndex) Remove(globalSeqs []uint64) {
 	}
 
 	for key := range affectedCW {
+		toRemove := toRemoveByAccount[key.Account]
 		idx.byContractWildcard[key] = filterSeqs(idx.byContractWildcard[key], toRemove)
 		if len(idx.byContractWildcard[key]) == 0 {
 			delete(idx.byContractWildcard, key)
@@ -241,12 +261,12 @@ func (idx *WALIndex) Stats() (count int, minSeq, maxSeq uint64) {
 	defer idx.mu.RUnlock()
 
 	count = len(idx.entries)
-	for seq := range idx.entries {
-		if minSeq == 0 || seq < minSeq {
-			minSeq = seq
+	for key := range idx.entries {
+		if minSeq == 0 || key.GlobalSeq < minSeq {
+			minSeq = key.GlobalSeq
 		}
-		if seq > maxSeq {
-			maxSeq = seq
+		if key.GlobalSeq > maxSeq {
+			maxSeq = key.GlobalSeq
 		}
 	}
 	return
@@ -294,7 +314,7 @@ func (w *WALWriter) Add(globalSeq, account, contract, action uint64) {
 		w.batch = w.db.NewBatch()
 	}
 
-	key := makeWALKey(globalSeq)
+	key := makeWALKey(globalSeq, account)
 	val := makeWALValue(account, contract, action)
 	w.batch.Set(key, val, nil)
 	w.count++
@@ -317,6 +337,40 @@ func (w *WALWriter) Flush() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.commitLocked()
+}
+
+func (w *WALWriter) FlushToBatch(batch *pebble.Batch) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if len(w.pending) == 0 {
+		return nil
+	}
+
+	for _, e := range w.pending {
+		key := makeWALKey(e.GlobalSeq, e.Account)
+		val := makeWALValue(e.Account, e.Contract, e.Action)
+		batch.Set(key, val, nil)
+	}
+
+	return nil
+}
+
+func (w *WALWriter) CommitPending() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	for _, e := range w.pending {
+		w.index.Add(e)
+	}
+	w.pending = w.pending[:0]
+
+	if w.batch != nil {
+		w.batch.Close()
+		w.batch = nil
+	}
+	w.count = 0
+	w.stats.BatchesCommitted++
 }
 
 func (w *WALWriter) commitLocked() error {
@@ -481,10 +535,8 @@ func (c *WALCompactor) Compact() error {
 	}
 
 	batch := c.db.NewBatch()
-	compactedSeqs := make([]uint64, len(entries))
-	for i, e := range entries {
-		batch.Delete(makeWALKey(e.GlobalSeq), nil)
-		compactedSeqs[i] = e.GlobalSeq
+	for _, e := range entries {
+		batch.Delete(makeWALKey(e.GlobalSeq, e.Account), nil)
 	}
 
 	if err := batch.Commit(pebble.Sync); err != nil {
@@ -493,7 +545,7 @@ func (c *WALCompactor) Compact() error {
 	}
 	batch.Close()
 
-	c.index.Remove(compactedSeqs)
+	c.index.RemoveEntries(entries)
 
 	c.stats.EntriesCompacted += uint64(len(entries))
 

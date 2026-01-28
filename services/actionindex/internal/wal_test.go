@@ -43,6 +43,58 @@ func TestWALWriterBasic(t *testing.T) {
 	}
 }
 
+func TestWALMultipleAccountsSameGlobalSeq(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := pebble.Open(filepath.Join(tmpDir, "testdb"), &pebble.Options{})
+	if err != nil {
+		t.Fatalf("failed to open pebble: %v", err)
+	}
+	defer db.Close()
+
+	walIndex := NewWALIndex()
+	w := NewWALWriter(db, walIndex)
+
+	receiver := uint64(1000)
+	sender := uint64(2000)
+	contract := uint64(5000)
+	action := uint64(6000)
+	globalSeq := uint64(100)
+
+	w.Add(globalSeq, receiver, contract, action)
+	w.Add(globalSeq, sender, contract, action)
+
+	if err := w.Flush(); err != nil {
+		t.Fatalf("Flush failed: %v", err)
+	}
+
+	stats := w.Stats()
+	if stats.EntriesWritten != 2 {
+		t.Errorf("entries written = %d, want 2", stats.EntriesWritten)
+	}
+
+	if walIndex.Count() != 2 {
+		t.Errorf("WAL index count = %d, want 2", walIndex.Count())
+	}
+
+	reader := NewWALReader(walIndex)
+
+	receiverSeqs, err := reader.GetEntriesForAccount(receiver)
+	if err != nil {
+		t.Fatalf("GetEntriesForAccount(receiver) failed: %v", err)
+	}
+	if len(receiverSeqs) != 1 || receiverSeqs[0] != globalSeq {
+		t.Errorf("receiver seqs = %v, want [%d]", receiverSeqs, globalSeq)
+	}
+
+	senderSeqs, err := reader.GetEntriesForAccount(sender)
+	if err != nil {
+		t.Fatalf("GetEntriesForAccount(sender) failed: %v", err)
+	}
+	if len(senderSeqs) != 1 || senderSeqs[0] != globalSeq {
+		t.Errorf("sender seqs = %v, want [%d]", senderSeqs, globalSeq)
+	}
+}
+
 func TestWALWriterAutoBatch(t *testing.T) {
 	tmpDir := t.TempDir()
 	db, err := pebble.Open(filepath.Join(tmpDir, "testdb"), &pebble.Options{})
@@ -281,9 +333,9 @@ func TestWALIndexLoadFromDB(t *testing.T) {
 
 	// Write entries directly to Pebble (simulating existing WAL)
 	batch := db.NewBatch()
-	batch.Set(makeWALKey(100), makeWALValue(1000, 5000, 6000), nil)
-	batch.Set(makeWALKey(101), makeWALValue(1000, 5000, 6001), nil)
-	batch.Set(makeWALKey(102), makeWALValue(2000, 7000, 8000), nil)
+	batch.Set(makeWALKey(100, 1000), makeWALValue(1000, 5000, 6000), nil)
+	batch.Set(makeWALKey(101, 1000), makeWALValue(1000, 5000, 6001), nil)
+	batch.Set(makeWALKey(102, 2000), makeWALValue(2000, 7000, 8000), nil)
 	if err := batch.Commit(pebble.Sync); err != nil {
 		t.Fatalf("batch commit failed: %v", err)
 	}

@@ -96,7 +96,12 @@ func migrateWAL(db *pebble.DB, stats *MetadataMigrationStats) error {
 		val := iter.Value()
 		stats.BytesRead += uint64(len(val))
 
-		newKey := makeWALKey(globalSeq)
+		account, _, _, ok := parseWALValue(val)
+		if !ok {
+			continue
+		}
+
+		newKey := makeWALKey(globalSeq, account)
 		if err := batch.Set(newKey, val, pebble.NoSync); err != nil {
 			return err
 		}

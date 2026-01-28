@@ -2,6 +2,7 @@ package internal
 
 import (
 	"bytes"
+	"encoding/binary"
 	"testing"
 )
 
@@ -163,19 +164,42 @@ func TestTimeMapValue(t *testing.T) {
 
 func TestWALKey(t *testing.T) {
 	globalSeq := uint64(123456789012345)
+	account := uint64(0x4444444444444444)
 
-	key := makeWALKey(globalSeq)
+	key := makeWALKey(globalSeq, account)
 
 	if key[0] != PrefixWAL {
 		t.Errorf("prefix: got %x, want %x", key[0], PrefixWAL)
 	}
 
-	parsedSeq, ok := parseWALKey(key)
+	parsedSeq, parsedAccount, ok := parseWALKey(key)
 	if !ok {
 		t.Fatal("parse failed")
 	}
 	if parsedSeq != globalSeq {
 		t.Errorf("globalSeq: got %d, want %d", parsedSeq, globalSeq)
+	}
+	if parsedAccount != account {
+		t.Errorf("account: got %d, want %d", parsedAccount, account)
+	}
+}
+
+func TestWALKeyLegacy(t *testing.T) {
+	globalSeq := uint64(123456789012345)
+
+	legacyKey := make([]byte, 9)
+	legacyKey[0] = PrefixWAL
+	binary.BigEndian.PutUint64(legacyKey[1:9], globalSeq)
+
+	parsedSeq, parsedAccount, ok := parseWALKey(legacyKey)
+	if !ok {
+		t.Fatal("parse failed for legacy key")
+	}
+	if parsedSeq != globalSeq {
+		t.Errorf("globalSeq: got %d, want %d", parsedSeq, globalSeq)
+	}
+	if parsedAccount != 0 {
+		t.Errorf("account: got %d, want 0 (legacy has no account in key)", parsedAccount)
 	}
 }
 

@@ -231,11 +231,13 @@ func (idx *Indexes) CommitWithSync(libNum, headNum uint32, sync bool) error {
 		return nil
 	}
 
-	if err := idx.walWriter.Flush(); err != nil {
+	batch := idx.db.NewBatch()
+
+	if err := idx.walWriter.FlushToBatch(batch); err != nil {
+		batch.Close()
 		return err
 	}
 
-	batch := idx.db.NewBatch()
 	propKey := makePropertiesKey()
 	propVal := makePropertiesValue(libNum, headNum)
 	batch.Set(propKey, propVal, nil)
@@ -253,6 +255,8 @@ func (idx *Indexes) CommitWithSync(libNum, headNum uint32, sync bool) error {
 		return err
 	}
 	batch.Close()
+
+	idx.walWriter.CommitPending()
 
 	idx.cachedLibNum.Store(libNum)
 	idx.cachedHeadNum.Store(headNum)

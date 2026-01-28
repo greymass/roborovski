@@ -73,19 +73,28 @@ func parseTimeMapValue(val []byte) (minSeq, maxSeq uint64, ok bool) {
 	return minSeq, maxSeq, true
 }
 
-func makeWALKey(globalSeq uint64) []byte {
-	buf := make([]byte, 9)
+func makeWALKey(globalSeq, account uint64) []byte {
+	buf := make([]byte, 17)
 	buf[0] = PrefixWAL
 	binary.BigEndian.PutUint64(buf[1:9], globalSeq)
+	binary.BigEndian.PutUint64(buf[9:17], account)
 	return buf
 }
 
-func parseWALKey(key []byte) (globalSeq uint64, ok bool) {
-	if len(key) != 9 || key[0] != PrefixWAL {
-		return 0, false
+func parseWALKey(key []byte) (globalSeq, account uint64, ok bool) {
+	if key[0] != PrefixWAL {
+		return 0, 0, false
 	}
-	globalSeq = binary.BigEndian.Uint64(key[1:9])
-	return globalSeq, true
+	if len(key) == 9 {
+		globalSeq = binary.BigEndian.Uint64(key[1:9])
+		return globalSeq, 0, true
+	}
+	if len(key) == 17 {
+		globalSeq = binary.BigEndian.Uint64(key[1:9])
+		account = binary.BigEndian.Uint64(key[9:17])
+		return globalSeq, account, true
+	}
+	return 0, 0, false
 }
 
 func makeWALValue(account, contract, action uint64) []byte {
