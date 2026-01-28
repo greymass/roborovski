@@ -33,7 +33,7 @@ func NewStreamClient(id uint64, server *StreamServer, filter ActionFilter, start
 	}
 }
 
-func (c *StreamClient) Run(ctx context.Context, sendAction func(StreamedAction) error, sendCatchupComplete func() error) error {
+func (c *StreamClient) Run(ctx context.Context, sendAction func(StreamedAction) error, sendCatchupComplete func() error, sendError func(StreamError) error, sendHeartbeat func() error) error {
 	sub := c.server.broadcaster.Subscribe(c.filter)
 	c.sub = sub
 	defer c.server.broadcaster.Unsubscribe(sub.id)
@@ -44,55 +44,63 @@ func (c *StreamClient) Run(ctx context.Context, sendAction func(StreamedAction) 
 	logger.Printf("stream", "Client %d: startSeq=%d, headSeq=%d, needsCatchup=%v", c.id, c.startSeq, headSeq, needsCatchup)
 
 	if needsCatchup {
-		logger.Printf("stream", "Client %d starting catchup from seq %d to %d", c.id, c.startSeq, headSeq)
+		sub.SetCatchingUp(true)
 
-		catchup := NewStreamCatchup(
-			c.server.indexes,
-			c.server.reader,
-			c.filter,
-			c.startSeq,
-			headSeq,
-		)
-
+		currentStartSeq := c.startSeq
 		var lastSentSeq uint64
-		err := catchup.Run(ctx, func(action StreamedAction) error {
-			if err := sendAction(action); err != nil {
-				return err
-			}
-			c.actionsSent.Add(1)
-			lastSentSeq = action.GlobalSeq
-			return nil
-		})
+		totalCatchupStart := time.Now()
+		iteration := 0
 
-		if err != nil {
-			return err
-		}
+		for currentStartSeq < headSeq {
+			iteration++
+			logger.Printf("stream", "Client %d catchup iteration %d: seq %d to %d", c.id, iteration, currentStartSeq, headSeq)
 
-		for {
-			select {
-			case action, ok := <-sub.sendCh:
-				if !ok {
-					return nil
-				}
-				if action.GlobalSeq <= lastSentSeq {
-					continue
-				}
+			catchup := NewStreamCatchup(
+				c.server.indexes,
+				c.server.reader,
+				c.filter,
+				currentStartSeq,
+				headSeq,
+			)
+
+			iterStart := time.Now()
+			err := catchup.Run(ctx, func(action StreamedAction) error {
 				if err := sendAction(action); err != nil {
 					return err
 				}
 				c.actionsSent.Add(1)
 				lastSentSeq = action.GlobalSeq
-			default:
-				goto catchupDone
+				return nil
+			})
+
+			if err != nil {
+				sub.SetCatchingUp(false)
+				return err
 			}
+
+			iterDuration := time.Since(iterStart)
+			logger.Printf("stream", "Client %d catchup iteration %d done in %v, lastSeq=%d",
+				c.id, iteration, iterDuration.Round(time.Millisecond), lastSentSeq)
+
+			currentStartSeq = headSeq + 1
+			headSeq, _ = c.server.broadcaster.GetState()
 		}
-	catchupDone:
-		logger.Printf("stream", "Client %d catchup complete", c.id)
+
+		sub.SetCatchingUp(false)
+		sub.ResetCounters()
+
+		totalDuration := time.Since(totalCatchupStart)
+		logger.Printf("stream", "Client %d catchup complete: %d actions in %v (%d iterations), lastSeq=%d",
+			c.id, c.actionsSent.Load(), totalDuration.Round(time.Millisecond), iteration, lastSentSeq)
 	}
 
 	if err := sendCatchupComplete(); err != nil {
 		return err
 	}
+
+	headSeqNow, libSeqNow := c.server.broadcaster.GetState()
+	logger.Printf("stream", "Client %d entering live mode: headSeq=%d, libSeq=%d, liveMode=%v",
+		c.id, headSeqNow, libSeqNow, c.server.broadcaster.IsLiveMode())
 
 	heartbeatInterval := time.Duration(c.server.GetHeartbeatInterval()) * time.Second
 	heartbeatTicker := time.NewTicker(heartbeatInterval)
@@ -105,6 +113,9 @@ func (c *StreamClient) Run(ctx context.Context, sendAction func(StreamedAction) 
 		case <-c.closeChan:
 			return nil
 		case <-heartbeatTicker.C:
+			if err := sendHeartbeat(); err != nil {
+				return err
+			}
 		case action, ok := <-sub.sendCh:
 			if !ok {
 				return nil
@@ -113,6 +124,11 @@ func (c *StreamClient) Run(ctx context.Context, sendAction func(StreamedAction) 
 				return err
 			}
 			c.actionsSent.Add(1)
+		case streamErr, ok := <-sub.errorCh:
+			if !ok {
+				return nil
+			}
+			return sendError(streamErr)
 		}
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -198,6 +199,14 @@ func (ws *StreamWebSocketServer) handleWebSocket(w http.ResponseWriter, r *http.
 			head, lib := ws.server.broadcaster.GetState()
 			return ws.sendCatchupComplete(ctx, conn, head, lib)
 		},
+		func(streamErr StreamError) error {
+			ws.sendError(ctx, conn, streamErr.Code, streamErr.Message)
+			return fmt.Errorf("stream error [%d]: %s", streamErr.Code, streamErr.Message)
+		},
+		func() error {
+			head, lib := ws.server.broadcaster.GetState()
+			return ws.sendHeartbeat(ctx, conn, head, lib)
+		},
 	)
 
 	ws.removeClient(wsc)
@@ -286,6 +295,15 @@ func (ws *StreamWebSocketServer) sendAction(ctx context.Context, conn *websocket
 func (ws *StreamWebSocketServer) sendCatchupComplete(ctx context.Context, conn *websocket.Conn, headSeq, libSeq uint64) error {
 	msg := wsCatchupCompleteMessage{
 		Type:    "catchup_complete",
+		HeadSeq: headSeq,
+		LibSeq:  libSeq,
+	}
+	return wsjson.Write(ctx, conn, msg)
+}
+
+func (ws *StreamWebSocketServer) sendHeartbeat(ctx context.Context, conn *websocket.Conn, headSeq, libSeq uint64) error {
+	msg := wsHeartbeatMessage{
+		Type:    "heartbeat",
 		HeadSeq: headSeq,
 		LibSeq:  libSeq,
 	}

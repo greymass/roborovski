@@ -31,7 +31,7 @@ func (f *ActionFilter) Matches(action StreamedAction) bool {
 	}
 
 	if len(f.Receivers) == 0 {
-		return contractMatch && action.Receiver == action.Contract
+		return contractMatch
 	}
 
 	_, receiverMatch := f.Receivers[action.Receiver]
@@ -42,30 +42,57 @@ func (f *ActionFilter) Matches(action StreamedAction) bool {
 	return contractMatch && receiverMatch
 }
 
+type StreamError struct {
+	Code    uint16
+	Message string
+}
+
 type Subscription struct {
 	id        uint64
 	filter    ActionFilter
 	sendCh    chan StreamedAction
-	lastSent  atomic.Uint64
-	lastAck   atomic.Uint64
+	errorCh   chan StreamError
 	createdAt time.Time
+
+	// Backpressure tracking using simple counters (not globalSeq)
+	sendCount atomic.Uint64
+	ackCount  atomic.Uint64
+
+	// Catchup mode - when true, broadcasts are skipped (gap filled from index after)
+	catchingUp atomic.Bool
+
+	// For debugging/logging
+	lastSentSeq    atomic.Uint64
+	blockedCount   atomic.Uint64
+	lastBlockedLog atomic.Int64
 }
 
 func (s *Subscription) canSend() bool {
 	const maxAhead = 10000
-	return s.lastSent.Load()-s.lastAck.Load() < maxAhead
+	sent := s.sendCount.Load()
+	acked := s.ackCount.Load()
+	if acked >= sent {
+		return true
+	}
+	return sent-acked < maxAhead
+}
+
+func (s *Subscription) ResetCounters() {
+	s.sendCount.Store(0)
+	s.ackCount.Store(0)
+}
+
+func (s *Subscription) SetCatchingUp(catching bool) {
+	s.catchingUp.Store(catching)
+}
+
+func (s *Subscription) IsCatchingUp() bool {
+	return s.catchingUp.Load()
 }
 
 func (s *Subscription) Ack(globalSeq uint64) {
-	for {
-		current := s.lastAck.Load()
-		if globalSeq <= current {
-			return
-		}
-		if s.lastAck.CompareAndSwap(current, globalSeq) {
-			return
-		}
-	}
+	s.ackCount.Add(1)
+	_ = globalSeq // globalSeq no longer used for backpressure, just increment count
 }
 
 const (
@@ -79,8 +106,9 @@ const (
 
 	MaxStreamMessageSize = 10 * 1024 * 1024
 
-	ActionErrorInvalidRequest uint16 = 1
-	ActionErrorServerSyncing  uint16 = 2
-	ActionErrorMaxClients     uint16 = 3
-	ActionErrorNoActions      uint16 = 4
+	ActionErrorInvalidRequest  uint16 = 1
+	ActionErrorServerSyncing   uint16 = 2
+	ActionErrorMaxClients      uint16 = 3
+	ActionErrorNoActions       uint16 = 4
+	ActionErrorDataInconsistent uint16 = 5
 )

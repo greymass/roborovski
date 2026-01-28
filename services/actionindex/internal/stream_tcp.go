@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -162,6 +163,14 @@ func (ts *StreamTCPServer) handleConnection(conn net.Conn) {
 			head, lib := ts.server.broadcaster.GetState()
 			return ts.sendCatchupComplete(conn, head, lib)
 		},
+		func(streamErr StreamError) error {
+			ts.sendError(conn, streamErr.Code, streamErr.Message)
+			return fmt.Errorf("stream error [%d]: %s", streamErr.Code, streamErr.Message)
+		},
+		func() error {
+			head, lib := ts.server.broadcaster.GetState()
+			return ts.sendHeartbeat(conn, head, lib)
+		},
 	)
 
 	ts.removeClient(tc)
@@ -172,8 +181,14 @@ func (ts *StreamTCPServer) handleConnection(conn net.Conn) {
 }
 
 func (ts *StreamTCPServer) recvLoop(ctx context.Context, tc *streamTCPClient, cancel context.CancelFunc) {
+	heartbeatInterval := ts.server.GetHeartbeatInterval()
+	readTimeout := time.Duration(heartbeatInterval*3) * time.Second
+	if readTimeout < 120*time.Second {
+		readTimeout = 120 * time.Second
+	}
+
 	for {
-		tc.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		tc.conn.SetReadDeadline(time.Now().Add(readTimeout))
 
 		msgType, payload, err := ts.readMessage(tc.conn)
 		if err != nil {

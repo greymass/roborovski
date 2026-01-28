@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"encoding/hex"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -160,11 +161,12 @@ func (s *Syncer) syncLoop() {
 	}
 
 	cfg := corereader.SyncConfig{
-		Workers:       workerCount,
-		BulkThreshold: 1000,
-		LogInterval:   logInterval,
-		ActionFilter:  s.combinedFilter(),
-		Debug:         s.config.Debug,
+		Workers:          workerCount,
+		BulkThreshold:    1000,
+		LogInterval:      logInterval,
+		ActionFilter:     s.combinedFilter(),
+		Debug:            s.config.Debug,
+		RetainActionData: s.broadcaster != nil,
 	}
 
 	s.librarySyncer = corereader.NewSyncer(s.reader, cfg)
@@ -179,6 +181,10 @@ func (s *Syncer) syncLoop() {
 
 	if err := s.librarySyncer.SyncActions(processor, startBlock); err != nil {
 		logger.Printf("sync", "Sync error: %v", err)
+	}
+
+	if err := processor.FinalSync(); err != nil {
+		logger.Printf("sync", "Final sync error: %v", err)
 	}
 }
 
@@ -244,7 +250,9 @@ func (p *AccountHistoryProcessor) ProcessBlock(block corereader.Block) error {
 	}
 
 	if p.syncer.broadcaster != nil && p.syncer.broadcaster.IsLiveMode() && actionCount > 0 {
-		p.broadcastActions(block)
+		if err := p.broadcastActions(block); err != nil {
+			return err
+		}
 	}
 
 	var blockTimeStart time.Time
@@ -275,18 +283,137 @@ func (p *AccountHistoryProcessor) ProcessBlock(block corereader.Block) error {
 	return nil
 }
 
-func (p *AccountHistoryProcessor) broadcastActions(block corereader.Block) {
-	for i := range block.Actions {
-		action := &block.Actions[i]
-		p.syncer.broadcaster.Broadcast(StreamedAction{
-			GlobalSeq: action.GlobalSeq,
-			BlockNum:  block.BlockNum,
-			BlockTime: block.BlockTime,
-			Contract:  action.Contract,
-			Action:    action.Action,
-			Receiver:  action.Account,
-		})
+func (p *AccountHistoryProcessor) broadcastActions(block corereader.Block) error {
+	if len(block.Actions) == 0 {
+		return nil
 	}
+
+	subCount := p.syncer.broadcaster.SubscriberCount()
+	if subCount == 0 {
+		return nil
+	}
+
+	var totalStart time.Time
+	if p.syncer.config.QueryTrace {
+		totalStart = time.Now()
+	}
+
+	var filterStart time.Time
+	if p.syncer.config.QueryTrace {
+		filterStart = time.Now()
+	}
+
+	var matchingActions []int
+	for i := range block.Actions {
+		a := &block.Actions[i]
+		if p.syncer.broadcaster.CouldMatch(a.Contract, a.Action, a.Account) {
+			matchingActions = append(matchingActions, i)
+		}
+	}
+
+	var filterDur time.Duration
+	if p.syncer.config.QueryTrace {
+		filterDur = time.Since(filterStart)
+	}
+
+	if len(matchingActions) == 0 {
+		if p.syncer.config.QueryTrace {
+			logger.Printf("debug-stream", "block=%d actions=%d matched=0 subs=%d filter=%v",
+				block.BlockNum, len(block.Actions), subCount, filterDur)
+		}
+		return nil
+	}
+
+	var dataStart time.Time
+	if p.syncer.config.QueryTrace {
+		dataStart = time.Now()
+	}
+
+	var delivered int
+	var sendDur time.Duration
+	source := "inline"
+
+	if block.HasActionData() {
+		var dataDur time.Duration
+		if p.syncer.config.QueryTrace {
+			dataDur = time.Since(dataStart)
+		}
+
+		var sendStart time.Time
+		if p.syncer.config.QueryTrace {
+			sendStart = time.Now()
+		}
+
+		for _, idx := range matchingActions {
+			a := &block.Actions[idx]
+			actionData := block.GetActionDataBySeq(a.GlobalSeq)
+			if p.syncer.broadcaster.Broadcast(StreamedAction{
+				GlobalSeq:  a.GlobalSeq,
+				BlockNum:   block.BlockNum,
+				BlockTime:  block.BlockTime,
+				Contract:   a.Contract,
+				Action:     a.Action,
+				Receiver:   a.Account,
+				ActionData: actionData,
+			}) {
+				delivered++
+			}
+		}
+
+		if p.syncer.config.QueryTrace {
+			sendDur = time.Since(sendStart)
+			_ = dataDur
+		}
+	} else {
+		source = "fetched"
+		seqs := make([]uint64, len(matchingActions))
+		for i, idx := range matchingActions {
+			seqs[i] = block.Actions[idx].GlobalSeq
+		}
+
+		traces, _, err := p.syncer.reader.GetActionsByGlobalSeqs(seqs)
+		if err != nil {
+			errMsg := fmt.Sprintf("failed to fetch action data for block %d: %v", block.BlockNum, err)
+			p.syncer.broadcaster.BroadcastError(ActionErrorDataInconsistent, errMsg)
+			return fmt.Errorf("%s", errMsg)
+		}
+
+		var sendStart time.Time
+		if p.syncer.config.QueryTrace {
+			sendStart = time.Now()
+		}
+
+		for i, at := range traces {
+			idx := matchingActions[i]
+			var actionData []byte
+			if at.Act.Data != "" {
+				actionData, _ = hex.DecodeString(at.Act.Data)
+			}
+			if p.syncer.broadcaster.Broadcast(StreamedAction{
+				GlobalSeq:  seqs[i],
+				BlockNum:   block.BlockNum,
+				BlockTime:  block.BlockTime,
+				Contract:   block.Actions[idx].Contract,
+				Action:     block.Actions[idx].Action,
+				Receiver:   block.Actions[idx].Account,
+				ActionData: actionData,
+			}) {
+				delivered++
+			}
+		}
+
+		if p.syncer.config.QueryTrace {
+			sendDur = time.Since(sendStart)
+		}
+	}
+
+	if p.syncer.config.QueryTrace {
+		totalDur := time.Since(totalStart)
+		logger.Printf("debug-stream", "block=%d actions=%d matched=%d delivered=%d subs=%d (%s) total=%v filter=%v send=%v",
+			block.BlockNum, len(block.Actions), len(matchingActions), delivered, subCount, source, totalDur, filterDur, sendDur)
+	}
+
+	return nil
 }
 
 func (p *AccountHistoryProcessor) ShouldCommit(blocksProcessed int) bool {
@@ -301,10 +428,14 @@ func (p *AccountHistoryProcessor) Commit(currentBlock uint32, bulkMode bool) err
 
 	p.syncer.indexes.SetBulkMode(bulkMode)
 
-	commitCount := (currentBlock / p.syncer.bulkCommitInterval) % 10
-	var err error
-	withSync := commitCount == 0
-	err = p.syncer.indexes.CommitWithTiming(currentBlock, currentBlock, withSync, p.timing)
+	var withSync bool
+	if bulkMode {
+		commitCount := (currentBlock / p.syncer.bulkCommitInterval) % 10
+		withSync = commitCount == 0
+	} else {
+		withSync = true
+	}
+	err := p.syncer.indexes.CommitWithTiming(currentBlock, currentBlock, withSync, p.timing)
 
 	if err != nil {
 		return err
@@ -337,6 +468,16 @@ func (p *AccountHistoryProcessor) Flush() error {
 	}
 	logger.Printf("sync", "Flush complete, transitioned to live mode")
 	return nil
+}
+
+func (p *AccountHistoryProcessor) FinalSync() error {
+	libNum, _, _ := p.syncer.indexes.GetProperties()
+	if libNum == 0 {
+		return nil
+	}
+
+	logger.Printf("sync", "Performing final sync commit at block %d", libNum)
+	return p.syncer.indexes.CommitWithTiming(libNum, libNum, true, nil)
 }
 
 // ProcessBatch processes multiple parsed blocks in one call.
