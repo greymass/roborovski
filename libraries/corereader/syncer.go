@@ -10,11 +10,12 @@ import (
 )
 
 type SyncConfig struct {
-	Workers       int
-	BulkThreshold uint32
-	LogInterval   time.Duration
-	ActionFilter  ActionFilterFunc
-	Debug         bool
+	Workers          int
+	BulkThreshold    uint32
+	LogInterval      time.Duration
+	ActionFilter     ActionFilterFunc
+	Debug            bool
+	RetainActionData bool
 }
 
 type SyncProgress struct {
@@ -303,12 +304,17 @@ func (s *Syncer) SyncActions(processor Processor, startBlock uint32) error {
 			continue
 		}
 
-		block := filterRawBlock(notifs[0], s.config.ActionFilter)
+		var block Block
+		if s.config.RetainActionData && notifs[0].HasActionData() {
+			block = filterRawBlockWithData(&notifs[0], s.config.ActionFilter)
+		} else {
+			block = filterRawBlock(notifs[0], s.config.ActionFilter)
+		}
 		if err := processor.ProcessBlock(block); err != nil {
 			return fmt.Errorf("processing block %d: %w", s.currentBlock, err)
 		}
 
-		liveActionCount += len(block.Actions)
+		liveActionCount += len(block.Executions)
 		liveNotifCount += len(block.Actions)
 
 		if processor.ShouldCommit(1) {
@@ -497,7 +503,7 @@ func (s *Syncer) bulkSyncParallel(sr *SliceReader, endBlock uint32, processor Ba
 
 			sliceActionCount := 0
 			for _, block := range ready.blocks {
-				sliceActionCount += len(block.Actions)
+				sliceActionCount += len(block.Executions)
 			}
 			actionCount += sliceActionCount
 
@@ -587,6 +593,14 @@ func countBlockStats(notif *RawBlock) (actions int, notifications int) {
 
 func filterRawBlock(notif RawBlock, filterFunc ActionFilterFunc) Block {
 	filtered, _, _ := FilterRawBlockInto(notif, filterFunc, nil, nil)
+	return filtered
+}
+
+func filterRawBlockWithData(notif *RawBlock, filterFunc ActionFilterFunc) Block {
+	filtered, _, _ := FilterRawBlockInto(*notif, filterFunc, nil, nil)
+	if notif.HasActionData() {
+		filtered.SetRawBlock(notif)
+	}
 	return filtered
 }
 

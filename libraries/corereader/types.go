@@ -34,6 +34,23 @@ type RawBlock struct {
 	ActionMeta    []ActionMetadata
 	Actions       []CanonicalAction
 	NamesInBlock  []uint64
+
+	rawData     []byte
+	dataOffsets []uint32
+	dataLengths []uint32
+}
+
+func (r *RawBlock) GetActionData(dataIndex uint32) []byte {
+	if r.rawData == nil || int(dataIndex) >= len(r.dataOffsets) {
+		return nil
+	}
+	off := r.dataOffsets[dataIndex]
+	length := r.dataLengths[dataIndex]
+	return r.rawData[off : off+length]
+}
+
+func (r *RawBlock) HasActionData() bool {
+	return r.rawData != nil
 }
 
 // Action represents a canonically-deduplicated action for a specific account.
@@ -65,6 +82,28 @@ type Block struct {
 	Executions []ContractExecution
 	MinSeq     uint64
 	MaxSeq     uint64
+
+	rawBlock *RawBlock
+}
+
+func (b *Block) GetActionDataBySeq(globalSeq uint64) []byte {
+	if b.rawBlock == nil || !b.rawBlock.HasActionData() {
+		return nil
+	}
+	for i := range b.rawBlock.Actions {
+		if b.rawBlock.Actions[i].GlobalSeqUint64 == globalSeq {
+			return b.rawBlock.GetActionData(b.rawBlock.Actions[i].DataIndex)
+		}
+	}
+	return nil
+}
+
+func (b *Block) HasActionData() bool {
+	return b.rawBlock != nil && b.rawBlock.HasActionData()
+}
+
+func (b *Block) SetRawBlock(raw *RawBlock) {
+	b.rawBlock = raw
 }
 
 // Processor handles single-block processing during sync.

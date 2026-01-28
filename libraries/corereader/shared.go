@@ -114,10 +114,17 @@ func loadBlockIndexSimple(path string) (map[uint32]blockIndexEntry, error) {
 		return nil, fmt.Errorf("block index too small")
 	}
 
-	count := binary.LittleEndian.Uint32(data[0:4])
+	const entrySize = 32
+
+	headerCount := binary.LittleEndian.Uint32(data[0:4])
+	actualCount := uint32((len(data) - 4) / entrySize)
+
+	count := headerCount
+	if actualCount > headerCount {
+		count = actualCount
+	}
 
 	index := make(map[uint32]blockIndexEntry, count)
-	const entrySize = 32
 
 	offset := 4
 	for i := uint32(0); i < count; i++ {
@@ -275,12 +282,14 @@ func (r *byteSliceReader) ReadVarint() int64 {
 
 // syncBlockBlob is a pooled structure for sync-optimized block parsing.
 type syncBlockBlob struct {
-	Block      syncBlockData
-	Actions    []syncActionInfo
-	CatsOffset []uint32
-	authBuf    []uint32
-	catLengths []uint64
-	reader     byteSliceReader
+	Block       syncBlockData
+	Actions     []syncActionInfo
+	CatsOffset  []uint32
+	authBuf     []uint32
+	catLengths  []uint64
+	reader      byteSliceReader
+	dataOffsets []uint32
+	dataLengths []uint32
 }
 
 var syncBlockBlobPool = sync.Pool{
@@ -289,10 +298,12 @@ var syncBlockBlobPool = sync.Pool{
 			Block: syncBlockData{
 				NamesInBlock: make([]uint64, 0, 64),
 			},
-			Actions:    make([]syncActionInfo, 0, 128),
-			CatsOffset: make([]uint32, 0, 128),
-			authBuf:    make([]uint32, 0, 256),
-			catLengths: make([]uint64, 0, 128),
+			Actions:     make([]syncActionInfo, 0, 128),
+			CatsOffset:  make([]uint32, 0, 128),
+			authBuf:     make([]uint32, 0, 256),
+			catLengths:  make([]uint64, 0, 128),
+			dataOffsets: make([]uint32, 0, 64),
+			dataLengths: make([]uint32, 0, 64),
 		}
 	},
 }
@@ -303,6 +314,8 @@ func (b *syncBlockBlob) reset() {
 	b.CatsOffset = b.CatsOffset[:0]
 	b.authBuf = b.authBuf[:0]
 	b.catLengths = b.catLengths[:0]
+	b.dataOffsets = b.dataOffsets[:0]
+	b.dataLengths = b.dataLengths[:0]
 }
 
 // bytesToSyncBlockBlob parses block data into a pooled structure optimized for sync.
@@ -353,8 +366,17 @@ func bytesToSyncBlockBlob(inBytes []byte) *syncBlockBlob {
 	}
 
 	dataLen := r.ReadUvarint()
+	if cap(blob.dataOffsets) < int(dataLen) {
+		blob.dataOffsets = make([]uint32, dataLen)
+		blob.dataLengths = make([]uint32, dataLen)
+	} else {
+		blob.dataOffsets = blob.dataOffsets[:dataLen]
+		blob.dataLengths = blob.dataLengths[:dataLen]
+	}
 	for i := uint64(0); i < dataLen; i++ {
 		dataIndexLen := r.ReadUvarint()
+		blob.dataOffsets[i] = uint32(r.pos)
+		blob.dataLengths[i] = uint32(dataIndexLen)
 		r.Skip(int(dataIndexLen))
 	}
 
