@@ -2,18 +2,32 @@ package fcraw
 
 import (
 	"encoding/binary"
+	"fmt"
 )
 
 type SliceDecoder struct {
-	data []byte
-	pos  int
+	data    []byte
+	pos     int
+	Context string
 }
 
 func NewSliceDecoder(data []byte) *SliceDecoder {
 	return &SliceDecoder{data: data}
 }
 
+func (d *SliceDecoder) Remaining() int {
+	return len(d.data) - d.pos
+}
+
+func (d *SliceDecoder) checkBounds(need int, op string) {
+	if d.pos+need > len(d.data) {
+		panic(fmt.Sprintf("fcraw decode error: %s requires %d bytes but only %d remaining (pos=%d, len=%d, context=%s)",
+			op, need, d.Remaining(), d.pos, len(d.data), d.Context))
+	}
+}
+
 func (d *SliceDecoder) ReadByte() byte {
+	d.checkBounds(1, "ReadByte")
 	b := d.data[d.pos]
 	d.pos++
 	return b
@@ -24,18 +38,21 @@ func (d *SliceDecoder) ReadUint8() uint8 {
 }
 
 func (d *SliceDecoder) ReadUint16() uint16 {
+	d.checkBounds(2, "ReadUint16")
 	v := binary.LittleEndian.Uint16(d.data[d.pos:])
 	d.pos += 2
 	return v
 }
 
 func (d *SliceDecoder) ReadUint32() uint32 {
+	d.checkBounds(4, "ReadUint32")
 	v := binary.LittleEndian.Uint32(d.data[d.pos:])
 	d.pos += 4
 	return v
 }
 
 func (d *SliceDecoder) ReadUint64() uint64 {
+	d.checkBounds(8, "ReadUint64")
 	v := binary.LittleEndian.Uint64(d.data[d.pos:])
 	d.pos += 8
 	return v
@@ -50,6 +67,7 @@ func (d *SliceDecoder) ReadVarUint32() uint32 {
 	var shift uint
 
 	for {
+		d.checkBounds(1, "ReadVarUint32")
 		b := d.data[d.pos]
 		d.pos++
 
@@ -60,7 +78,7 @@ func (d *SliceDecoder) ReadVarUint32() uint32 {
 		shift += 7
 
 		if shift >= 35 {
-			panic("varint overflows uint32")
+			panic(fmt.Sprintf("varint overflows uint32 (pos=%d, len=%d, context=%s)", d.pos, len(d.data), d.Context))
 		}
 	}
 
@@ -72,6 +90,7 @@ func (d *SliceDecoder) ReadBool() bool {
 }
 
 func (d *SliceDecoder) ReadChecksum256() [32]byte {
+	d.checkBounds(32, "ReadChecksum256")
 	var result [32]byte
 	copy(result[:], d.data[d.pos:d.pos+32])
 	d.pos += 32
@@ -83,6 +102,7 @@ func (d *SliceDecoder) ReadVariantIndex() uint32 {
 }
 
 func (d *SliceDecoder) ReadBytesRef(n int) []byte {
+	d.checkBounds(n, fmt.Sprintf("ReadBytesRef(%d)", n))
 	result := d.data[d.pos : d.pos+n]
 	d.pos += n
 	return result
