@@ -368,16 +368,17 @@ type SliceInfo struct {
 }
 
 type sliceReader struct {
-	sliceNum   uint32
-	basePath   string
-	blockIndex map[uint32]blockIndexEntry
-	minBlock   uint32 // Cached minimum block number from blockIndex
-	blockFile  *os.File
-	mmapData   []byte
-	header     *DataLogHeader
-	loaded     bool
-	mu         sync.RWMutex
-	refCount   atomic.Int32
+	sliceNum         uint32
+	basePath         string
+	blockIndex       map[uint32]blockIndexEntry
+	minBlock         uint32 // Cached minimum block number from blockIndex
+	blockFile        *os.File
+	mmapData         []byte
+	header           *DataLogHeader
+	loaded           bool
+	mu               sync.RWMutex
+	refCount         atomic.Int32
+	mmapWaitTimeout  time.Duration // Max time to wait for data file growth (0 = use default 30s)
 }
 
 type SliceGlobRange struct {
@@ -2326,13 +2327,21 @@ func (r *sliceReader) readBlockData(blockNum uint32) ([]byte, error) {
 		copy(data, rawData)
 		r.mu.RUnlock()
 	} else {
-		const maxCRCRetries = 3
-		const crcRetryDelay = 50 * time.Millisecond
+		mmapTimeout := r.mmapWaitTimeout
+		if mmapTimeout == 0 {
+			mmapTimeout = 30 * time.Second
+		}
+		const mmapInitialDelay = 50 * time.Millisecond
+		const mmapMaxDelay = time.Second
 
 		crcOffset := dataEndOffset
 		endOffset := crcOffset + 4
 
-		for retry := 0; retry < maxCRCRetries; retry++ {
+		delay := mmapInitialDelay
+		start := time.Now()
+		warned := false
+
+		for {
 			r.mu.RLock()
 			needsRemap := r.mmapData == nil || endOffset > int64(len(r.mmapData))
 			r.mu.RUnlock()
@@ -2340,20 +2349,26 @@ func (r *sliceReader) readBlockData(blockNum uint32) ([]byte, error) {
 			if needsRemap {
 				r.mu.Lock()
 				if r.mmapData == nil || endOffset > int64(len(r.mmapData)) {
-					if err := r.remapDataLog(); err != nil {
-						r.mu.Unlock()
-						return nil, fmt.Errorf("block %d extends beyond mmap bounds and remap failed: %w", blockNum, err)
-					}
-					if endOffset > int64(len(r.mmapData)) {
-						r.mu.Unlock()
-						if retry < maxCRCRetries-1 {
-							time.Sleep(crcRetryDelay)
-							continue
-						}
-						return nil, fmt.Errorf("block %d CRC extends beyond mmap bounds after remap", blockNum)
-					}
+					r.remapDataLog()
 				}
+				needsRemap = r.mmapData == nil || endOffset > int64(len(r.mmapData))
 				r.mu.Unlock()
+
+				if needsRemap {
+					elapsed := time.Since(start)
+					if elapsed > mmapTimeout {
+						return nil, fmt.Errorf("block %d extends beyond mmap bounds after %v (need offset %d, mmap size %d)",
+							blockNum, elapsed.Round(time.Millisecond), endOffset, len(r.mmapData))
+					}
+					if !warned {
+						logger.Printf("warning", "Block %d waiting for data file growth in slice %d (need offset %d, mmap size %d)",
+							blockNum, r.sliceNum, endOffset, len(r.mmapData))
+						warned = true
+					}
+					time.Sleep(delay)
+					delay = min(delay*2, mmapMaxDelay)
+					continue
+				}
 			}
 
 			r.mu.RLock()
@@ -2368,17 +2383,18 @@ func (r *sliceReader) readBlockData(blockNum uint32) ([]byte, error) {
 				break
 			}
 
-			if retry < maxCRCRetries-1 {
-				logger.Printf("warning", "Block %d CRC mismatch in slice %d (stored=%08x calc=%08x), retrying (%d/%d)",
-					blockNum, r.sliceNum, storedCRC, calculatedCRC, retry+1, maxCRCRetries)
-				time.Sleep(crcRetryDelay)
-				r.mu.Lock()
-				r.remapDataLog()
-				r.mu.Unlock()
-			} else {
-				return nil, fmt.Errorf("block %d CRC mismatch in slice %d after %d retries (stored=%08x calc=%08x)",
-					blockNum, r.sliceNum, maxCRCRetries, storedCRC, calculatedCRC)
+			elapsed := time.Since(start)
+			if elapsed > mmapTimeout {
+				return nil, fmt.Errorf("block %d CRC mismatch in slice %d after %v (stored=%08x calc=%08x)",
+					blockNum, r.sliceNum, elapsed.Round(time.Millisecond), storedCRC, calculatedCRC)
 			}
+			logger.Printf("warning", "Block %d CRC mismatch in slice %d (stored=%08x calc=%08x), retrying",
+				blockNum, r.sliceNum, storedCRC, calculatedCRC)
+			time.Sleep(delay)
+			delay = min(delay*2, mmapMaxDelay)
+			r.mu.Lock()
+			r.remapDataLog()
+			r.mu.Unlock()
 		}
 	}
 

@@ -427,8 +427,9 @@ func TestReadBlockData_MmapBoundsCheck(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reader.close()
+	reader.mmapWaitTimeout = 200 * time.Millisecond
 
-	// Try to read block (should fail bounds check)
+	// Try to read block (should fail bounds check after timeout)
 	_, err = reader.readBlockData(1)
 	if err == nil {
 		t.Error("Expected error for block extending beyond mmap bounds")
