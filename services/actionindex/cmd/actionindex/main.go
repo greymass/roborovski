@@ -48,7 +48,7 @@ func main() {
 		logger.SetMinLevel(logger.LevelDebug)
 		logger.SetCategoryFilter(nil)
 		logger.Printf("debug-perf", "Debug logging enabled - all categories active")
-	} else if cfg.Compact {
+	} else if cfg.Inspect || cfg.Compact || cfg.UpgradeDB {
 		logger.SetMinLevel(logger.LevelDebug)
 		logger.SetCategoryFilter([]string{"startup", "pebble", "debug-pebble"})
 	} else if cfg.Timing || cfg.QueryTrace {
@@ -80,6 +80,19 @@ func main() {
 	runtime.GOMAXPROCS(cfg.Workers)
 
 	logger.Printf("startup", "actionindex %s starting...", Version)
+
+	if cfg.Inspect {
+		internal.InspectDatabase(cfg.IndexStorage)
+		return
+	}
+
+	if cfg.UpgradeDB {
+		if err := internal.UpgradeDatabase(cfg.IndexStorage); err != nil {
+			logger.Fatal("Database upgrade failed: %v", err)
+		}
+		logger.Printf("startup", "Done")
+		return
+	}
 
 	if err := internal.InitOpenAPI(Version); err != nil {
 		logger.Fatal("Failed to load OpenAPI spec: %v", err)

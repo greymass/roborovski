@@ -18,7 +18,9 @@ type Config struct {
 	// Streaming
 	StreamMaxClients        int `name:"stream-max-clients" default:"100" help:"Maximum concurrent streaming clients"`
 	StreamHeartbeatInterval int `name:"stream-heartbeat" default:"30" help:"Streaming heartbeat interval in seconds"`
+	Inspect          bool   `help:"Inspect Pebble database on disk and report format/version info, then exit"`
 	Compact          bool   `help:"Run full Pebble compaction on startup, then exit"`
+	UpgradeDB        bool   `name:"upgrade-db" help:"Upgrade Pebble database format to latest version, then exit"`
 	MigrateMetadata  bool   `name:"migrate-metadata" help:"Migrate metadata indexes (0x13-0x15 → 0x90-0x92), then exit"`
 	CleanupMetadata  bool   `name:"cleanup-metadata" help:"Delete legacy metadata indexes (0x13-0x15) after migration, then exit"`
 	RebuildMetadata  bool   `name:"rebuild-metadata" help:"Rebuild chunk metadata from database, then exit"`
