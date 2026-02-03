@@ -9,6 +9,7 @@ import (
 
 type RouteConfig struct {
 	Path          string `name:"path"`
+	Suffix        string `name:"suffix"`
 	Backend       string `name:"backend"`
 	Timeout       int    `name:"timeout"`
 	RateLimit     int    `name:"rate-limit"`

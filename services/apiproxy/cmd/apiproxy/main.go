@@ -94,9 +94,9 @@ func main() {
 			},
 		}
 
-		validatorCfg := proxy.GetDefaultValidator(route.Path)
+		validatorCfg := proxy.GetDefaultValidator(route.Path, route.Suffix)
 
-		if err := proxyHandler.AddBackend(route.Path, route.Backend, route.Timeout, route.CacheDuration, validatorCfg, cbSettings); err != nil {
+		if err := proxyHandler.AddBackend(route.Path, route.Suffix, route.Backend, route.Timeout, route.CacheDuration, validatorCfg, cbSettings); err != nil {
 			logger.Fatal("Failed to add backend for %s: %v", route.Path, err)
 		}
 
@@ -110,7 +110,11 @@ func main() {
 		if validatorCfg != nil {
 			validationStatus = "enabled"
 		}
-		logger.Printf("startup", "Registered route: %s -> %s (cache: %s, validation: %s)", route.Path, route.Backend, cacheStatus, validationStatus)
+		routeDesc := route.Path
+		if route.Suffix != "" {
+			routeDesc = route.Path + "*" + route.Suffix
+		}
+		logger.Printf("startup", "Registered route: %s -> %s (cache: %s, validation: %s)", routeDesc, route.Backend, cacheStatus, validationStatus)
 	}
 
 	mux := http.NewServeMux()

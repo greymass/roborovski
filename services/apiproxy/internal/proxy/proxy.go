@@ -8,12 +8,19 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/greymass/roborovski/services/apiproxy/internal/metrics"
 	"github.com/sony/gobreaker"
 	"golang.org/x/sync/singleflight"
 )
+
+type route struct {
+	Path    string
+	Suffix  string
+	Backend *Backend
+}
 
 type Backend struct {
 	URL            *url.URL
@@ -25,20 +32,19 @@ type Backend struct {
 }
 
 type Proxy struct {
-	backends     map[string]*Backend
+	routes       []route
 	singleflight *singleflight.Group
 	cache        *Cache
 }
 
 func NewProxy(cacheEnabled bool) *Proxy {
 	return &Proxy{
-		backends:     make(map[string]*Backend),
 		singleflight: &singleflight.Group{},
 		cache:        NewCache(cacheEnabled),
 	}
 }
 
-func (p *Proxy) AddBackend(path, backend string, timeout int, cacheDuration int, validatorCfg *ValidatorConfig, cbSettings gobreaker.Settings) error {
+func (p *Proxy) AddBackend(path, suffix, backend string, timeout int, cacheDuration int, validatorCfg *ValidatorConfig, cbSettings gobreaker.Settings) error {
 	parsedURL, err := url.Parse(backend)
 	if err != nil {
 		return fmt.Errorf("invalid backend URL %s: %w", backend, err)
@@ -86,26 +92,40 @@ func (p *Proxy) AddBackend(path, backend string, timeout int, cacheDuration int,
 
 	cb := gobreaker.NewCircuitBreaker(cbSettings)
 
-	p.backends[path] = &Backend{
-		URL:            parsedURL,
-		ReverseProxy:   reverseProxy,
-		CircuitBreaker: cb,
-		Transport:      transport,
-		CacheDuration:  time.Duration(cacheDuration) * time.Second,
-		Validator:      NewRouteValidator(validatorCfg),
-	}
+	p.routes = append(p.routes, route{
+		Path:   path,
+		Suffix: suffix,
+		Backend: &Backend{
+			URL:            parsedURL,
+			ReverseProxy:   reverseProxy,
+			CircuitBreaker: cb,
+			Transport:      transport,
+			CacheDuration:  time.Duration(cacheDuration) * time.Second,
+			Validator:      NewRouteValidator(validatorCfg),
+		},
+	})
 
 	return nil
 }
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	backend, ok := p.backends[r.URL.Path]
-	if !ok {
-		for path, b := range p.backends {
-			if matchPath(r.URL.Path, path) {
-				backend = b
-				break
-			}
+	var backend *Backend
+	bestScore := 0
+	for i := range p.routes {
+		rt := &p.routes[i]
+		if !matchPath(r.URL.Path, rt.Path) {
+			continue
+		}
+		if rt.Suffix != "" && !strings.HasSuffix(r.URL.Path, rt.Suffix) {
+			continue
+		}
+		score := len(rt.Path)
+		if rt.Suffix != "" {
+			score += len(rt.Suffix) + 1000
+		}
+		if score > bestScore {
+			backend = rt.Backend
+			bestScore = score
 		}
 	}
 

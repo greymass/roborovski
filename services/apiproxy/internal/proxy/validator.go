@@ -176,12 +176,31 @@ var defaultActivityValidator = &ValidatorConfig{
 	AllowedBodyKeys:    []string{"limit", "cursor", "order", "contract", "action", "decode", "date", "start_date", "end_date", "trace"},
 }
 
-func GetDefaultValidator(path string) *ValidatorConfig {
+var defaultTokenTransfersValidator = &ValidatorConfig{
+	AllowedQueryParams: []string{"limit", "cursor", "order", "contract", "symbol", "direction", "start_date", "end_date"},
+}
+
+var defaultTokenBalancesValidator = &ValidatorConfig{
+	AllowedQueryParams: []string{"contract", "hide_zero"},
+}
+
+func GetDefaultValidator(path string, suffix ...string) *ValidatorConfig {
 	if cfg, ok := defaultValidators[path]; ok {
 		return cfg
 	}
+	sfx := ""
+	if len(suffix) > 0 {
+		sfx = suffix[0]
+	}
 	if bytes.HasPrefix([]byte(path), []byte("/account/")) {
-		return defaultActivityValidator
+		switch sfx {
+		case "/transfers":
+			return defaultTokenTransfersValidator
+		case "/balances":
+			return defaultTokenBalancesValidator
+		default:
+			return defaultActivityValidator
+		}
 	}
 	if bytes.HasPrefix([]byte(path), []byte("/debug/")) {
 		return nil
