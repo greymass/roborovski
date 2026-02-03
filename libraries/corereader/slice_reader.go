@@ -122,6 +122,16 @@ func (sm *SharedSliceMetadata) addSlice(slice SliceInfo) bool {
 	return true
 }
 
+func (sm *SharedSliceMetadata) getSliceIndex(sliceNum uint32) (int, bool) {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	if sm.sliceIndex == nil {
+		return -1, false
+	}
+	idx, ok := sm.sliceIndex[sliceNum]
+	return idx, ok
+}
+
 func (sm *SharedSliceMetadata) markSliceFinalized(idx int) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -415,6 +425,7 @@ type SliceReader struct {
 
 	lastAccessedSliceIdx atomic.Int32   // Index of last accessed slice (-1 = none)
 	sliceMapByBlock      map[uint32]int // Block number / 10000 → slice index
+	sliceMapMu           sync.RWMutex
 
 	pinnedSlices        map[uint32]*sliceReader
 	pinnedSlicesMu      sync.RWMutex
@@ -570,6 +581,32 @@ func NewSliceReaderWithOptions(basePath string, opts SliceReaderOptions) (*Slice
 	}
 
 	return sr, nil
+}
+
+func (sr *SliceReader) addSliceWithMapRebuild(slice SliceInfo) (int, bool) {
+	added := sr.sharedMetadata.addSlice(slice)
+	if !added {
+		if idx, ok := sr.sharedMetadata.getSliceIndex(slice.SliceNum); ok {
+			return idx, false
+		}
+		return -1, false
+	}
+	sr.rebuildSliceMapByBlockLocked()
+	if idx, ok := sr.sharedMetadata.getSliceIndex(slice.SliceNum); ok {
+		return idx, true
+	}
+	return -1, true
+}
+
+func (sr *SliceReader) rebuildSliceMapByBlockLocked() {
+	count := sr.sharedMetadata.getSliceCount()
+	newMap := make(map[uint32]int, count)
+	for i := 0; i < count; i++ {
+		s := sr.sharedMetadata.getSlice(i)
+		key := s.StartBlock / s.BlocksPerSlice
+		newMap[key] = i
+	}
+	sr.sliceMapByBlock = newMap
 }
 
 func (sr *SliceReader) initBlockIndexCache() error {
@@ -1088,7 +1125,9 @@ func (sr *SliceReader) RefreshSliceMetadata() error {
 		lastSlice.SliceNum, oldEndBlock, endBlock, oldGlobMin, globMin, oldGlobMax, globMax)
 
 	sliceKey := (lastSlice.StartBlock - 1) / lastSlice.BlocksPerSlice
+	sr.sliceMapMu.Lock()
 	sr.sliceMapByBlock[sliceKey] = sliceCount - 1
+	sr.sliceMapMu.Unlock()
 
 	sr.lastAccessedSliceIdx.Store(-1)
 
@@ -1251,7 +1290,9 @@ func (sr *SliceReader) findSliceForBlock(blockNum uint32) (*SliceInfo, error) {
 	blocksPerSlice := firstSlice.BlocksPerSlice
 	sliceKey := (blockNum - 1) / blocksPerSlice // -1 because blocks start at 1
 
+	sr.sliceMapMu.RLock()
 	sliceIdx, found := sr.sliceMapByBlock[sliceKey]
+	sr.sliceMapMu.RUnlock()
 	if !found {
 		sliceStartBlock := sliceKey*blocksPerSlice + 1
 		sliceMaxBlock := (sliceKey + 1) * blocksPerSlice
@@ -1264,7 +1305,9 @@ func (sr *SliceReader) findSliceForBlock(blockNum uint32) (*SliceInfo, error) {
 				return nil, fmt.Errorf("block %d in new slice %d but index not ready", blockNum, sliceKey)
 			}
 
+			sr.sliceMapMu.Lock()
 			if existingIdx, exists := sr.sliceMapByBlock[sliceKey]; exists {
+				sr.sliceMapMu.Unlock()
 				sr.lastAccessedSliceIdx.Store(int32(existingIdx))
 				slice := sr.sharedMetadata.getSlice(existingIdx)
 				return &slice, nil
@@ -1280,7 +1323,6 @@ func (sr *SliceReader) findSliceForBlock(blockNum uint32) (*SliceInfo, error) {
 				BlocksPerSlice: blocksPerSlice,
 			}
 
-			// Finalize and refresh the previous slice's glob range before appending new slice
 			currentCount := sr.sharedMetadata.getSliceCount()
 			if currentCount > 0 {
 				prevIdx := currentCount - 1
@@ -1303,8 +1345,8 @@ func (sr *SliceReader) findSliceForBlock(blockNum uint32) (*SliceInfo, error) {
 				}
 			}
 
-			newIdx := sr.sharedMetadata.appendSlice(newSlice)
-			sr.sliceMapByBlock[sliceKey] = newIdx
+			newIdx, _ := sr.addSliceWithMapRebuild(newSlice)
+			sr.sliceMapMu.Unlock()
 			sr.lastAccessedSliceIdx.Store(int32(newIdx))
 
 			if sr.blockIndexCache != nil {
@@ -1845,13 +1887,14 @@ func (sr *SliceReader) UpdateGlobRangeIndexWithNewSlices() error {
 	sr.sharedMetadata.slices = sliceInfos
 	sr.sharedMetadata.mu.Unlock()
 
-	// Rebuild sliceMapByBlock with new indices
+	sr.sliceMapMu.Lock()
 	newMap := make(map[uint32]int)
 	for i := range sliceInfos {
 		key := sliceInfos[i].StartBlock / 10000
 		newMap[key] = i
 	}
 	sr.sliceMapByBlock = newMap
+	sr.sliceMapMu.Unlock()
 
 	logger.Printf("config", "Glob range index updated: added %d slices (+%d KB), now indexed through slice %d",
 		newSliceCount, len(newRanges)*20/1024, maxIndexable)
@@ -3756,8 +3799,9 @@ func (sr *SliceReader) GetStateProps(bypassCache bool) (uint32, uint32, error) {
 					sr.blockIndexCache.FinalizeSlice(prevSlice.SliceNum)
 				}
 			}
-			newIdx := sr.sharedMetadata.appendSlice(newSlice)
-			sr.sliceMapByBlock[nextSliceNum] = newIdx
+			sr.sliceMapMu.Lock()
+			sr.addSliceWithMapRebuild(newSlice)
+			sr.sliceMapMu.Unlock()
 
 			alreadyKnown := false
 			if sr.blockIndexCache != nil {
