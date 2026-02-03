@@ -657,8 +657,8 @@ func sortIndicesByContractAction(indices []int32, entries []Entry) {
 	numGoroutines := 16
 	chunkSize := (n + numGoroutines - 1) / numGoroutines
 
-	buf1 := make([]int32, n)
-	buf2 := make([]int32, n)
+	buf1 := getSortBuf(n)
+	buf2 := getSortBuf(n)
 	copy(buf1, indices)
 
 	ranges := make([]chunkRange, 0, numGoroutines)
@@ -727,6 +727,9 @@ func sortIndicesByContractAction(indices []int32, entries []Entry) {
 	if &src[0] != &indices[0] {
 		copy(indices, src)
 	}
+
+	putSortBuf(buf1)
+	putSortBuf(buf2)
 }
 
 func sortIndicesByContractSeq(indices []int32, entries []Entry) {
@@ -745,8 +748,8 @@ func sortIndicesByContractSeq(indices []int32, entries []Entry) {
 	numGoroutines := 16
 	chunkSize := (n + numGoroutines - 1) / numGoroutines
 
-	buf1 := make([]int32, n)
-	buf2 := make([]int32, n)
+	buf1 := getSortBuf(n)
+	buf2 := getSortBuf(n)
 	copy(buf1, indices)
 
 	ranges := make([]chunkRange, 0, numGoroutines)
@@ -809,6 +812,24 @@ func sortIndicesByContractSeq(indices []int32, entries []Entry) {
 	if &src[0] != &indices[0] {
 		copy(indices, src)
 	}
+
+	putSortBuf(buf1)
+	putSortBuf(buf2)
+}
+
+var sortBufPool = sync.Pool{}
+
+func getSortBuf(n int) []int32 {
+	if v := sortBufPool.Get(); v != nil {
+		if buf := v.([]int32); cap(buf) >= n {
+			return buf[:n]
+		}
+	}
+	return make([]int32, n)
+}
+
+func putSortBuf(buf []int32) {
+	sortBufPool.Put(buf[:0])
 }
 
 type accountGroup struct {
