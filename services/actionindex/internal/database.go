@@ -192,6 +192,7 @@ func NewStore(path string, readOnly bool, cfg StoreConfig) (*Store, error) {
 	defer cache.Unref()
 
 	snappyFn := func() *block.CompressionProfile { return block.SnappyCompression }
+	zstdFn := func() *block.CompressionProfile { return block.ZstdCompression }
 
 	opts := &pebble.Options{
 		Logger:                      plog,
@@ -202,7 +203,7 @@ func NewStore(path string, readOnly bool, cfg StoreConfig) (*Store, error) {
 		MemTableStopWritesThreshold: memTableStopThreshold,
 		L0CompactionThreshold:       4,
 		L0StopWritesThreshold:       12,
-		LBaseMaxBytes:               64 << 20,
+		LBaseMaxBytes:               256 << 20,
 	}
 
 	opts.CompactionConcurrencyRange = func() (int, int) { return 1, compactors }
@@ -214,8 +215,8 @@ func NewStore(path string, readOnly bool, cfg StoreConfig) (*Store, error) {
 	opts.Levels[2] = pebble.LevelOptions{FilterPolicy: bloom.FilterPolicy(10), Compression: snappyFn}
 	opts.Levels[3] = pebble.LevelOptions{FilterPolicy: bloom.FilterPolicy(10), Compression: snappyFn}
 	opts.Levels[4] = pebble.LevelOptions{FilterPolicy: bloom.FilterPolicy(10), Compression: snappyFn}
-	opts.Levels[5] = pebble.LevelOptions{FilterPolicy: bloom.FilterPolicy(10), Compression: snappyFn}
-	opts.Levels[6] = pebble.LevelOptions{FilterPolicy: bloom.FilterPolicy(10), Compression: snappyFn}
+	opts.Levels[5] = pebble.LevelOptions{FilterPolicy: bloom.FilterPolicy(10), Compression: zstdFn}
+	opts.Levels[6] = pebble.LevelOptions{FilterPolicy: bloom.FilterPolicy(10), Compression: zstdFn}
 
 	if readOnly {
 		opts.ReadOnly = true

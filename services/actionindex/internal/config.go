@@ -26,14 +26,16 @@ type Config struct {
 	RebuildMetadata  bool   `name:"rebuild-metadata" help:"Rebuild chunk metadata from database, then exit"`
 
 	// Performance tuning
-	BlockCacheSizeMB  int64 `name:"block-cache-size-mb" alias:"block-cache-size" default:"2048" help:"Cache size in MB for parsed block data. 0 to disable."`
-	BlockIndexCache   bool  `name:"blockindex-cache" default:"true" help:"Cache block index in memory for faster lookups. false to disable."`
-	LRUCacheSlices    int   `name:"lru-cache-slices" default:"20" help:"Number of slice mmap handles to keep open"`
-	Compactors        int   `default:"4" help:"Number of concurrent Pebble compaction threads"`
-	PebbleCacheSizeMB int64 `name:"pebble-cache-size-mb" default:"2048" help:"Pebble block cache size in MB for index reads"`
-	GOGC              int   `name:"gogc" default:"20" help:"Go GC target percentage. Lower = more frequent GC, more CPU for less memory usage."`
-	SyncMemoryGB      int   `name:"sync-memory-gb" default:"4" help:"RAM budget for bulk sync in GB. Higher values = fewer disk writes = less GC pressure."`
-	Workers           int   `default:"16" help:"Parallel workers for query processing"`
+	BlockCacheSizeMB      int64 `name:"block-cache-size-mb" alias:"block-cache-size" default:"2048" help:"Cache size in MB for parsed block data. 0 to disable."`
+	BlockIndexCache       bool  `name:"blockindex-cache" default:"true" help:"Cache block index in memory for faster lookups. false to disable."`
+	LRUCacheSlices        int   `name:"lru-cache-slices" default:"20" help:"Number of slice mmap handles to keep open"`
+	Compactors            int   `default:"4" help:"Number of concurrent Pebble compaction threads"`
+	PebbleCacheSizeMB     int64 `name:"pebble-cache-size-mb" default:"2048" help:"Pebble block cache size in MB for index reads"`
+	GOGC                  int   `name:"gogc" default:"20" help:"Go GC target percentage. Lower = more frequent GC, more CPU for less memory usage."`
+	SyncMemoryGB          int   `name:"sync-memory-gb" default:"8" help:"RAM budget for bulk sync in GB. Higher values = fewer disk writes = less GC pressure."`
+	MemTableSizeMB        int   `name:"memtable-size-mb" default:"0" help:"Pebble memtable size in MB. 0 = auto (sync-memory-gb / 4). Smaller = smoother flushes."`
+	MemTableStopThreshold int   `name:"memtable-stop-threshold" default:"0" help:"Max memtables before write stall. 0 = auto (sync-memory-gb * 1024 / memtable-size)."`
+	Workers               int   `default:"16" help:"Parallel workers for query processing"`
 
 	// Data processing
 	IgnoredActions  []string `name:"ignored-actions" help:"Actions to ignore during sync (format: contract::action, e.g. eosio::onblock)"`
