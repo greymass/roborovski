@@ -5,42 +5,14 @@ import (
 )
 
 const (
-	PrefixLegacyAccountActions = 0x10
-	PrefixAccountActions       = 0x20
+	PrefixAccountActions = 0x20
 	PrefixContractAction       = 0x21
 	PrefixContractWildcard     = 0x22
 	PrefixProperties           = 0x90
 	PrefixWAL                  = 0x91
 	PrefixTimeMap              = 0x92
 
-	PrefixLegacyTimeMap    = 0x13
-	PrefixLegacyWAL        = 0x14
-	PrefixLegacyProperties = 0x15
 )
-
-func makeLegacyAccountActionsKey(account uint64, chunkID uint32) []byte {
-	buf := make([]byte, 13)
-	buf[0] = PrefixLegacyAccountActions
-	binary.BigEndian.PutUint64(buf[1:9], account)
-	binary.BigEndian.PutUint32(buf[9:13], chunkID)
-	return buf
-}
-
-func makeLegacyAccountActionsPrefix(account uint64) []byte {
-	buf := make([]byte, 9)
-	buf[0] = PrefixLegacyAccountActions
-	binary.BigEndian.PutUint64(buf[1:9], account)
-	return buf
-}
-
-func parseLegacyAccountActionsKey(key []byte) (account uint64, chunkID uint32, ok bool) {
-	if len(key) != 13 || key[0] != PrefixLegacyAccountActions {
-		return 0, 0, false
-	}
-	account = binary.BigEndian.Uint64(key[1:9])
-	chunkID = binary.BigEndian.Uint32(key[9:13])
-	return account, chunkID, true
-}
 
 func makeTimeMapKey(hour uint32) []byte {
 	buf := make([]byte, 5)
@@ -82,19 +54,12 @@ func makeWALKey(globalSeq, account uint64) []byte {
 }
 
 func parseWALKey(key []byte) (globalSeq, account uint64, ok bool) {
-	if key[0] != PrefixWAL {
+	if len(key) != 17 || key[0] != PrefixWAL {
 		return 0, 0, false
 	}
-	if len(key) == 9 {
-		globalSeq = binary.BigEndian.Uint64(key[1:9])
-		return globalSeq, 0, true
-	}
-	if len(key) == 17 {
-		globalSeq = binary.BigEndian.Uint64(key[1:9])
-		account = binary.BigEndian.Uint64(key[9:17])
-		return globalSeq, account, true
-	}
-	return 0, 0, false
+	globalSeq = binary.BigEndian.Uint64(key[1:9])
+	account = binary.BigEndian.Uint64(key[9:17])
+	return globalSeq, account, true
 }
 
 func makeWALValue(account, contract, action uint64) []byte {
@@ -216,22 +181,3 @@ func parseContractWildcardKey(key []byte) (account, contract, baseSeq uint64, ok
 	return account, contract, baseSeq, true
 }
 
-func makeLegacyPropertiesKey() []byte {
-	return []byte{PrefixLegacyProperties}
-}
-
-func parseLegacyWALKey(key []byte) (globalSeq uint64, ok bool) {
-	if len(key) != 9 || key[0] != PrefixLegacyWAL {
-		return 0, false
-	}
-	globalSeq = binary.BigEndian.Uint64(key[1:9])
-	return globalSeq, true
-}
-
-func parseLegacyTimeMapKey(key []byte) (hour uint32, ok bool) {
-	if len(key) != 5 || key[0] != PrefixLegacyTimeMap {
-		return 0, false
-	}
-	hour = binary.BigEndian.Uint32(key[1:5])
-	return hour, true
-}

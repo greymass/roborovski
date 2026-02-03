@@ -71,19 +71,14 @@ func (idx *WALIndex) LoadFromDB(db *pebble.DB) error {
 			continue
 		}
 
-		account, contract, action, ok := parseWALValue(iter.Value())
+		_, contract, action, ok := parseWALValue(iter.Value())
 		if !ok {
 			continue
 		}
 
-		// Use account from key if available (new format), otherwise from value (legacy)
-		if keyAccount != 0 {
-			account = keyAccount
-		}
-
 		idx.addLocked(WALEntry{
 			GlobalSeq: globalSeq,
-			Account:   account,
+			Account:   keyAccount,
 			Contract:  contract,
 			Action:    action,
 		})
@@ -404,11 +399,10 @@ func (w *WALWriter) Stats() WALWriterStats {
 }
 
 type WALCompactor struct {
-	mu       sync.Mutex
-	db       *pebble.DB
-	index    *WALIndex
-	metadata *ChunkMetadata
-	writer   *ChunkWriter
+	mu     sync.Mutex
+	db     *pebble.DB
+	index  *WALIndex
+	writer *ChunkWriter
 
 	minSeq uint64
 	maxSeq uint64
@@ -426,14 +420,13 @@ type WALCompactorStats struct {
 	ChunksCreated    uint64
 }
 
-func NewWALCompactor(db *pebble.DB, index *WALIndex, metadata *ChunkMetadata, writer *ChunkWriter) *WALCompactor {
+func NewWALCompactor(db *pebble.DB, index *WALIndex, writer *ChunkWriter) *WALCompactor {
 	return &WALCompactor{
-		db:       db,
-		index:    index,
-		metadata: metadata,
-		writer:   writer,
-		stopCh:   make(chan struct{}),
-		doneCh:   make(chan struct{}),
+		db:     db,
+		index:  index,
+		writer: writer,
+		stopCh: make(chan struct{}),
+		doneCh: make(chan struct{}),
 	}
 }
 

@@ -38,10 +38,9 @@ type partialEntry struct {
 }
 
 type ChunkWriter struct {
-	mu       sync.Mutex
-	db       *pebble.DB
-	metadata *ChunkMetadata
-	timeMap  *TimeMapper
+	mu      sync.Mutex
+	db      *pebble.DB
+	timeMap *TimeMapper
 
 	allActions       map[uint64]*partialEntry
 	contractAction   map[ContractActionKey]*partialEntry
@@ -75,10 +74,9 @@ type ChunkWriterDiagnostics struct {
 	EstimatedMemoryMB float64
 }
 
-func NewChunkWriter(db *pebble.DB, metadata *ChunkMetadata, timeMap *TimeMapper) *ChunkWriter {
+func NewChunkWriter(db *pebble.DB, timeMap *TimeMapper) *ChunkWriter {
 	return &ChunkWriter{
 		db:               db,
-		metadata:         metadata,
 		timeMap:          timeMap,
 		allActions:       make(map[uint64]*partialEntry),
 		contractAction:   make(map[ContractActionKey]*partialEntry),
@@ -93,9 +91,8 @@ func (w *ChunkWriter) AddAllActions(account uint64, seq uint64) {
 
 	entry := w.allActions[account]
 	if entry == nil {
-		chunkID := uint32(w.metadata.GetAllActionsChunkCount(account))
 		entry = &partialEntry{
-			partial: NewPartialChunk(chunkID),
+			partial: NewPartialChunk(),
 		}
 		w.allActions[account] = entry
 	}
@@ -104,7 +101,7 @@ func (w *ChunkWriter) AddAllActions(account uint64, seq uint64) {
 
 	if entry.partial.IsFull() {
 		w.flushAllActionsChunk(account, entry.partial)
-		entry.partial.Reset(entry.partial.ChunkID + 1)
+		entry.partial.Reset()
 	}
 }
 
@@ -116,7 +113,7 @@ func (w *ChunkWriter) AddContractAction(account, contract, action uint64, seq ui
 	entry := w.contractAction[key]
 	if entry == nil {
 		entry = &partialEntry{
-			partial: NewPartialChunk(0),
+			partial: NewPartialChunk(),
 		}
 		w.contractAction[key] = entry
 	}
@@ -125,7 +122,7 @@ func (w *ChunkWriter) AddContractAction(account, contract, action uint64, seq ui
 
 	if entry.partial.IsFull() {
 		w.flushContractActionChunk(key, entry.partial)
-		entry.partial.Reset(0)
+		entry.partial.Reset()
 	}
 }
 
@@ -137,7 +134,7 @@ func (w *ChunkWriter) AddContractWildcard(account, contract uint64, seq uint64) 
 	entry := w.contractWildcard[key]
 	if entry == nil {
 		entry = &partialEntry{
-			partial: NewPartialChunk(0),
+			partial: NewPartialChunk(),
 		}
 		w.contractWildcard[key] = entry
 	}
@@ -146,7 +143,7 @@ func (w *ChunkWriter) AddContractWildcard(account, contract uint64, seq uint64) 
 
 	if entry.partial.IsFull() {
 		w.flushContractWildcardChunk(key, entry.partial)
-		entry.partial.Reset(0)
+		entry.partial.Reset()
 	}
 }
 
@@ -188,12 +185,10 @@ func (w *ChunkWriter) AddBatchSorted(actions []ActionEntry) {
 
 		// === AllActions index ===
 		if a.Account != lastAccount || lastAllEntry == nil {
-			// Cache miss - need map lookup
 			entry := w.allActions[a.Account]
 			if entry == nil {
-				chunkID := uint32(w.metadata.GetAllActionsChunkCountNoLock(a.Account))
 				entry = &partialEntry{
-					partial: NewPartialChunk(chunkID),
+					partial: NewPartialChunk(),
 				}
 				w.allActions[a.Account] = entry
 			}
@@ -203,7 +198,7 @@ func (w *ChunkWriter) AddBatchSorted(actions []ActionEntry) {
 		lastAllEntry.partial.Add(a.GlobalSeq)
 		if lastAllEntry.partial.IsFull() {
 			w.flushAllActionsChunk(a.Account, lastAllEntry.partial)
-			lastAllEntry.partial.Reset(lastAllEntry.partial.ChunkID + 1)
+			lastAllEntry.partial.Reset()
 		}
 
 		// === ContractAction index ===
@@ -212,7 +207,7 @@ func (w *ChunkWriter) AddBatchSorted(actions []ActionEntry) {
 			entry := w.contractAction[caKey]
 			if entry == nil {
 				entry = &partialEntry{
-					partial: NewPartialChunk(0),
+					partial: NewPartialChunk(),
 				}
 				w.contractAction[caKey] = entry
 			}
@@ -222,7 +217,7 @@ func (w *ChunkWriter) AddBatchSorted(actions []ActionEntry) {
 		lastCAEntry.partial.Add(a.GlobalSeq)
 		if lastCAEntry.partial.IsFull() {
 			w.flushContractActionChunk(lastCAKey, lastCAEntry.partial)
-			lastCAEntry.partial.Reset(0)
+			lastCAEntry.partial.Reset()
 		}
 
 		// === ContractWildcard index ===
@@ -231,7 +226,7 @@ func (w *ChunkWriter) AddBatchSorted(actions []ActionEntry) {
 			entry := w.contractWildcard[cwKey]
 			if entry == nil {
 				entry = &partialEntry{
-					partial: NewPartialChunk(0),
+					partial: NewPartialChunk(),
 				}
 				w.contractWildcard[cwKey] = entry
 			}
@@ -241,7 +236,7 @@ func (w *ChunkWriter) AddBatchSorted(actions []ActionEntry) {
 		lastCWEntry.partial.Add(a.GlobalSeq)
 		if lastCWEntry.partial.IsFull() {
 			w.flushContractWildcardChunk(lastCWKey, lastCWEntry.partial)
-			lastCWEntry.partial.Reset(0)
+			lastCWEntry.partial.Reset()
 		}
 	}
 }
@@ -249,9 +244,8 @@ func (w *ChunkWriter) AddBatchSorted(actions []ActionEntry) {
 func (w *ChunkWriter) addAllActionsLocked(account uint64, seq uint64) {
 	entry := w.allActions[account]
 	if entry == nil {
-		chunkID := uint32(w.metadata.GetAllActionsChunkCount(account))
 		entry = &partialEntry{
-			partial: NewPartialChunk(chunkID),
+			partial: NewPartialChunk(),
 		}
 		w.allActions[account] = entry
 	}
@@ -260,16 +254,15 @@ func (w *ChunkWriter) addAllActionsLocked(account uint64, seq uint64) {
 
 	if entry.partial.IsFull() {
 		w.flushAllActionsChunk(account, entry.partial)
-		entry.partial.Reset(entry.partial.ChunkID + 1)
+		entry.partial.Reset()
 	}
 }
 
 func (w *ChunkWriter) addAllActionsNoLock(account uint64, seq uint64) {
 	entry := w.allActions[account]
 	if entry == nil {
-		chunkID := uint32(w.metadata.GetAllActionsChunkCountNoLock(account))
 		entry = &partialEntry{
-			partial: NewPartialChunk(chunkID),
+			partial: NewPartialChunk(),
 		}
 		w.allActions[account] = entry
 	}
@@ -278,7 +271,7 @@ func (w *ChunkWriter) addAllActionsNoLock(account uint64, seq uint64) {
 
 	if entry.partial.IsFull() {
 		w.flushAllActionsChunk(account, entry.partial)
-		entry.partial.Reset(entry.partial.ChunkID + 1)
+		entry.partial.Reset()
 	}
 }
 
@@ -287,7 +280,7 @@ func (w *ChunkWriter) addContractActionLocked(account, contract, action uint64, 
 	entry := w.contractAction[key]
 	if entry == nil {
 		entry = &partialEntry{
-			partial: NewPartialChunk(0),
+			partial: NewPartialChunk(),
 		}
 		w.contractAction[key] = entry
 	}
@@ -296,7 +289,7 @@ func (w *ChunkWriter) addContractActionLocked(account, contract, action uint64, 
 
 	if entry.partial.IsFull() {
 		w.flushContractActionChunk(key, entry.partial)
-		entry.partial.Reset(0)
+		entry.partial.Reset()
 	}
 }
 
@@ -305,7 +298,7 @@ func (w *ChunkWriter) addContractActionNoLock(account, contract, action uint64, 
 	entry := w.contractAction[key]
 	if entry == nil {
 		entry = &partialEntry{
-			partial: NewPartialChunk(0),
+			partial: NewPartialChunk(),
 		}
 		w.contractAction[key] = entry
 	}
@@ -314,7 +307,7 @@ func (w *ChunkWriter) addContractActionNoLock(account, contract, action uint64, 
 
 	if entry.partial.IsFull() {
 		w.flushContractActionChunk(key, entry.partial)
-		entry.partial.Reset(0)
+		entry.partial.Reset()
 	}
 }
 
@@ -323,7 +316,7 @@ func (w *ChunkWriter) addContractWildcardLocked(account, contract uint64, seq ui
 	entry := w.contractWildcard[key]
 	if entry == nil {
 		entry = &partialEntry{
-			partial: NewPartialChunk(0),
+			partial: NewPartialChunk(),
 		}
 		w.contractWildcard[key] = entry
 	}
@@ -332,7 +325,7 @@ func (w *ChunkWriter) addContractWildcardLocked(account, contract uint64, seq ui
 
 	if entry.partial.IsFull() {
 		w.flushContractWildcardChunk(key, entry.partial)
-		entry.partial.Reset(0)
+		entry.partial.Reset()
 	}
 }
 
@@ -341,7 +334,7 @@ func (w *ChunkWriter) addContractWildcardNoLock(account, contract uint64, seq ui
 	entry := w.contractWildcard[key]
 	if entry == nil {
 		entry = &partialEntry{
-			partial: NewPartialChunk(0),
+			partial: NewPartialChunk(),
 		}
 		w.contractWildcard[key] = entry
 	}
@@ -350,7 +343,7 @@ func (w *ChunkWriter) addContractWildcardNoLock(account, contract uint64, seq ui
 
 	if entry.partial.IsFull() {
 		w.flushContractWildcardChunk(key, entry.partial)
-		entry.partial.Reset(0)
+		entry.partial.Reset()
 	}
 }
 
@@ -359,25 +352,17 @@ func (w *ChunkWriter) flushAllActionsChunk(account uint64, p *PartialChunk) {
 		return
 	}
 
-	legacyEncoded, err := p.Encode()
+	encoded, err := EncodeLeanChunk(p.BaseSeq, p.Seqs)
 	if err != nil {
 		return
 	}
 
-	leanEncoded, err := EncodeLeanChunk(p.BaseSeq, p.Seqs)
-	if err != nil {
-		return
-	}
-
-	legacyKey := makeLegacyAccountActionsKey(account, p.ChunkID)
-	newKey := makeAccountActionsKey(account, p.BaseSeq)
+	key := makeAccountActionsKey(account, p.BaseSeq)
 
 	w.ensureBatch()
-	w.pendingBatch.Set(legacyKey, legacyEncoded, nil)
-	w.pendingBatch.Set(newKey, leanEncoded, nil)
-	w.batchSize += 2
+	w.pendingBatch.Set(key, encoded, nil)
+	w.batchSize++
 
-	w.metadata.AddAllActionsChunk(account, p.BaseSeq)
 	w.stats.ChunksWritten++
 	w.stats.SequencesWritten += uint64(p.Len())
 
@@ -457,21 +442,21 @@ func (w *ChunkWriter) FlushAllPartials() error {
 	for account, entry := range w.allActions {
 		if entry.partial.Len() > 0 {
 			w.flushAllActionsChunk(account, entry.partial)
-			entry.partial.Reset(entry.partial.ChunkID + 1)
+			entry.partial.Reset()
 		}
 	}
 
 	for key, entry := range w.contractAction {
 		if entry.partial.Len() > 0 {
 			w.flushContractActionChunk(key, entry.partial)
-			entry.partial.Reset(entry.partial.ChunkID + 1)
+			entry.partial.Reset()
 		}
 	}
 
 	for key, entry := range w.contractWildcard {
 		if entry.partial.Len() > 0 {
 			w.flushContractWildcardChunk(key, entry.partial)
-			entry.partial.Reset(entry.partial.ChunkID + 1)
+			entry.partial.Reset()
 		}
 	}
 

@@ -2,51 +2,8 @@ package internal
 
 import (
 	"bytes"
-	"encoding/binary"
 	"testing"
 )
-
-func TestLegacyAccountActionsKey(t *testing.T) {
-	account := uint64(0x123456789ABCDEF0)
-	chunkID := uint32(42)
-
-	key := makeLegacyAccountActionsKey(account, chunkID)
-
-	if key[0] != PrefixLegacyAccountActions {
-		t.Errorf("prefix: got %x, want %x", key[0], PrefixLegacyAccountActions)
-	}
-
-	parsedAccount, parsedChunkID, ok := parseLegacyAccountActionsKey(key)
-	if !ok {
-		t.Fatal("parse failed")
-	}
-	if parsedAccount != account {
-		t.Errorf("account: got %x, want %x", parsedAccount, account)
-	}
-	if parsedChunkID != chunkID {
-		t.Errorf("chunkID: got %d, want %d", parsedChunkID, chunkID)
-	}
-}
-
-func TestLegacyAccountActionsPrefix(t *testing.T) {
-	account := uint64(0x123456789ABCDEF0)
-
-	prefix := makeLegacyAccountActionsPrefix(account)
-	key0 := makeLegacyAccountActionsKey(account, 0)
-	key100 := makeLegacyAccountActionsKey(account, 100)
-
-	if !bytes.HasPrefix(key0, prefix) {
-		t.Error("key0 should have prefix")
-	}
-	if !bytes.HasPrefix(key100, prefix) {
-		t.Error("key100 should have prefix")
-	}
-
-	otherKey := makeLegacyAccountActionsKey(account+1, 0)
-	if bytes.HasPrefix(otherKey, prefix) {
-		t.Error("other account key should not have prefix")
-	}
-}
 
 func TestAccountActionsKey(t *testing.T) {
 	account := uint64(0x123456789ABCDEF0)
@@ -184,24 +141,6 @@ func TestWALKey(t *testing.T) {
 	}
 }
 
-func TestWALKeyLegacy(t *testing.T) {
-	globalSeq := uint64(123456789012345)
-
-	legacyKey := make([]byte, 9)
-	legacyKey[0] = PrefixWAL
-	binary.BigEndian.PutUint64(legacyKey[1:9], globalSeq)
-
-	parsedSeq, parsedAccount, ok := parseWALKey(legacyKey)
-	if !ok {
-		t.Fatal("parse failed for legacy key")
-	}
-	if parsedSeq != globalSeq {
-		t.Errorf("globalSeq: got %d, want %d", parsedSeq, globalSeq)
-	}
-	if parsedAccount != 0 {
-		t.Errorf("account: got %d, want 0 (legacy has no account in key)", parsedAccount)
-	}
-}
 
 func TestWALValue(t *testing.T) {
 	account := uint64(0x1111111111111111)
@@ -240,24 +179,6 @@ func TestPropertiesValue(t *testing.T) {
 	}
 	if pHeadNum != headNum {
 		t.Errorf("headNum: got %d, want %d", pHeadNum, headNum)
-	}
-}
-
-func TestLegacyKeyOrdering(t *testing.T) {
-	key0 := makeLegacyAccountActionsKey(100, 0)
-	key1 := makeLegacyAccountActionsKey(100, 1)
-	key2 := makeLegacyAccountActionsKey(100, 2)
-
-	if bytes.Compare(key0, key1) >= 0 {
-		t.Error("key0 should be < key1")
-	}
-	if bytes.Compare(key1, key2) >= 0 {
-		t.Error("key1 should be < key2")
-	}
-
-	keyOther := makeLegacyAccountActionsKey(101, 0)
-	if bytes.Compare(key2, keyOther) >= 0 {
-		t.Error("key2 should be < keyOther (different account)")
 	}
 }
 

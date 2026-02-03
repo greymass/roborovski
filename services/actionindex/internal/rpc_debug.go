@@ -16,6 +16,7 @@ type DebugAccountInfo struct {
 	ChunkBases       []uint64 `json:"chunk_bases,omitempty"`
 	FirstBase        uint64   `json:"first_base"`
 	LastBase         uint64   `json:"last_base"`
+	WALEntries       int      `json:"wal_entries"`
 }
 
 type DebugTimeMapInfo struct {
@@ -45,8 +46,38 @@ func HandleDebugAccount(indexes *Indexes, w http.ResponseWriter, r *http.Request
 	showBases := r.URL.Query().Get("bases") == "true"
 	accountID := chain.StringToName(account)
 
-	chunkCount := indexes.metadata.GetAllActionsChunkCount(accountID)
-	firstBase, lastBase := indexes.metadata.GetAllActionsSeqRange(accountID)
+	prefix := makeAccountActionsPrefix(accountID)
+	upperBound := incrementPrefix(prefix)
+	iter, err := indexes.db.NewIter(&pebble.IterOptions{
+		LowerBound: prefix,
+		UpperBound: upperBound,
+	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer iter.Close()
+
+	var chunkCount int
+	var firstBase, lastBase uint64
+	var bases []uint64
+
+	for iter.First(); iter.Valid(); iter.Next() {
+		_, baseSeq, ok := parseAccountActionsKey(iter.Key())
+		if !ok {
+			continue
+		}
+		if chunkCount == 0 {
+			firstBase = baseSeq
+		}
+		lastBase = baseSeq
+		chunkCount++
+		if showBases {
+			bases = append(bases, baseSeq)
+		}
+	}
+
+	walSeqs := indexes.walIndex.GetEntriesForAccount(accountID)
 
 	info := DebugAccountInfo{
 		Account:          account,
@@ -54,14 +85,11 @@ func HandleDebugAccount(indexes *Indexes, w http.ResponseWriter, r *http.Request
 		AllActionsChunks: chunkCount,
 		FirstBase:        firstBase,
 		LastBase:         lastBase,
+		WALEntries:       len(walSeqs),
 	}
 
 	if showBases {
-		indexes.metadata.mu.RLock()
-		bases := indexes.metadata.allActions[accountID]
-		info.ChunkBases = make([]uint64, len(bases))
-		copy(info.ChunkBases, bases)
-		indexes.metadata.mu.RUnlock()
+		info.ChunkBases = bases
 	}
 
 	writeJSON(w, info)
@@ -136,16 +164,48 @@ func HandleDebugChunkNear(indexes *Indexes, w http.ResponseWriter, r *http.Reque
 	}
 
 	accountID := chain.StringToName(account)
-	prevBase, nextBase, chunkID := indexes.metadata.GetChunkBaseSeqsNear(accountID, seq)
+
+	prefix := makeAccountActionsPrefix(accountID)
+	upperBound := incrementPrefix(prefix)
+	iter, iterErr := indexes.db.NewIter(&pebble.IterOptions{
+		LowerBound: prefix,
+		UpperBound: upperBound,
+	})
+	if iterErr != nil {
+		http.Error(w, iterErr.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer iter.Close()
+
+	var prevBase, nextBase uint64
+	seekKey := makeAccountActionsKey(accountID, seq)
+	if iter.SeekGE(seekKey) {
+		_, baseSeq, ok := parseAccountActionsKey(iter.Key())
+		if ok {
+			nextBase = baseSeq
+		}
+		if iter.Prev() {
+			_, baseSeq, ok := parseAccountActionsKey(iter.Key())
+			if ok {
+				prevBase = baseSeq
+			}
+		}
+	} else if iter.Last() {
+		_, baseSeq, ok := parseAccountActionsKey(iter.Key())
+		if ok {
+			prevBase = baseSeq
+		}
+	}
 
 	result := map[string]interface{}{
 		"account":    account,
 		"account_id": accountID,
 		"target_seq": seq,
-		"chunk_id":   chunkID,
 		"prev_base":  prevBase,
 		"next_base":  nextBase,
-		"gap_size":   nextBase - prevBase,
+	}
+	if nextBase > prevBase {
+		result["gap_size"] = nextBase - prevBase
 	}
 
 	writeJSON(w, result)
@@ -203,16 +263,37 @@ func HandleDebugCompareIndexes(indexes *Indexes, w http.ResponseWriter, r *http.
 
 	accountID := chain.StringToName(account)
 
-	allActionsCount := indexes.metadata.GetAllActionsChunkCount(accountID)
-	allActionsMin, allActionsMax := indexes.metadata.GetAllActionsSeqRange(accountID)
+	prefix := makeAccountActionsPrefix(accountID)
+	upperBound := incrementPrefix(prefix)
+	iter, iterErr := indexes.db.NewIter(&pebble.IterOptions{
+		LowerBound: prefix,
+		UpperBound: upperBound,
+	})
+
+	var chunkCount int
+	var minBase, maxBase uint64
+	if iterErr == nil {
+		for iter.First(); iter.Valid(); iter.Next() {
+			_, baseSeq, ok := parseAccountActionsKey(iter.Key())
+			if !ok {
+				continue
+			}
+			if chunkCount == 0 {
+				minBase = baseSeq
+			}
+			maxBase = baseSeq
+			chunkCount++
+		}
+		iter.Close()
+	}
 
 	result := map[string]interface{}{
 		"account":    account,
 		"account_id": accountID,
 		"all_actions": map[string]interface{}{
-			"chunk_count": allActionsCount,
-			"min_base":    allActionsMin,
-			"max_base":    allActionsMax,
+			"chunk_count": chunkCount,
+			"min_base":    minBase,
+			"max_base":    maxBase,
 		},
 	}
 
@@ -221,27 +302,27 @@ func HandleDebugCompareIndexes(indexes *Indexes, w http.ResponseWriter, r *http.
 
 func HandleDebugReadChunk(indexes *Indexes, w http.ResponseWriter, r *http.Request) {
 	account := r.URL.Query().Get("account")
-	chunkStr := r.URL.Query().Get("chunk")
+	baseSeqStr := r.URL.Query().Get("base_seq")
 
-	if account == "" || chunkStr == "" {
-		http.Error(w, "account and chunk parameters required", http.StatusBadRequest)
+	if account == "" || baseSeqStr == "" {
+		http.Error(w, "account and base_seq parameters required", http.StatusBadRequest)
 		return
 	}
 
-	chunkID, err := strconv.ParseUint(chunkStr, 10, 32)
+	baseSeq, err := strconv.ParseUint(baseSeqStr, 10, 64)
 	if err != nil {
-		http.Error(w, "invalid chunk parameter", http.StatusBadRequest)
+		http.Error(w, "invalid base_seq parameter", http.StatusBadRequest)
 		return
 	}
 
 	accountID := chain.StringToName(account)
-	key := makeLegacyAccountActionsKey(accountID, uint32(chunkID))
+	key := makeAccountActionsKey(accountID, baseSeq)
 
 	val, closer, err := indexes.db.Get(key)
 	if err != nil {
 		result := map[string]interface{}{
 			"account":  account,
-			"chunk_id": chunkID,
+			"base_seq": baseSeq,
 			"error":    err.Error(),
 		}
 		writeJSON(w, result)
@@ -249,11 +330,11 @@ func HandleDebugReadChunk(indexes *Indexes, w http.ResponseWriter, r *http.Reque
 	}
 	defer closer.Close()
 
-	chunk, err := DecodeChunk(val)
+	chunk, err := DecodeLeanChunk(baseSeq, val)
 	if err != nil {
 		result := map[string]interface{}{
 			"account":  account,
-			"chunk_id": chunkID,
+			"base_seq": baseSeq,
 			"error":    "decode error: " + err.Error(),
 		}
 		writeJSON(w, result)
@@ -271,7 +352,6 @@ func HandleDebugReadChunk(indexes *Indexes, w http.ResponseWriter, r *http.Reque
 
 	result := map[string]interface{}{
 		"account":   account,
-		"chunk_id":  chunkID,
 		"base_seq":  chunk.BaseSeq,
 		"seq_count": seqCount,
 	}
@@ -337,7 +417,11 @@ func HandleDebugScanContractAction(indexes *Indexes, w http.ResponseWriter, r *h
 	var lastChunkSeqs []uint64
 
 	for iter.First(); iter.Valid(); iter.Next() {
-		chunk, err := DecodeChunk(iter.Value())
+		_, _, _, baseSeq, ok := parseContractActionKey(iter.Key())
+		if !ok {
+			continue
+		}
+		chunk, err := DecodeLeanChunk(baseSeq, iter.Value())
 		if err != nil {
 			continue
 		}

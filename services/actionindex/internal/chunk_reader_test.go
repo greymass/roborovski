@@ -7,25 +7,24 @@ import (
 	"github.com/cockroachdb/pebble/v2"
 )
 
-func setupTestDB(t *testing.T) (*pebble.DB, *ChunkMetadata, *ChunkWriter, func()) {
+func setupTestDB(t *testing.T) (*pebble.DB, *ChunkWriter, func()) {
 	tmpDir := t.TempDir()
 	db, err := pebble.Open(filepath.Join(tmpDir, "testdb"), &pebble.Options{})
 	if err != nil {
 		t.Fatalf("failed to open pebble: %v", err)
 	}
 
-	metadata := NewChunkMetadata()
-	writer := NewChunkWriter(db, metadata, nil)
+	writer := NewChunkWriter(db, nil)
 
 	cleanup := func() {
 		db.Close()
 	}
 
-	return db, metadata, writer, cleanup
+	return db, writer, cleanup
 }
 
 func TestChunkReaderGetLastN(t *testing.T) {
-	db, metadata, writer, cleanup := setupTestDB(t)
+	db, writer, cleanup := setupTestDB(t)
 	defer cleanup()
 
 	for i := uint64(0); i < 100; i++ {
@@ -34,7 +33,7 @@ func TestChunkReaderGetLastN(t *testing.T) {
 	writer.FlushAllPartials()
 	writer.Sync()
 
-	reader := NewChunkReader(db, metadata, nil)
+	reader := NewChunkReader(db,nil)
 
 	seqs, err := reader.GetLastN(1000, 20)
 	if err != nil {
@@ -54,7 +53,7 @@ func TestChunkReaderGetLastN(t *testing.T) {
 }
 
 func TestChunkReaderGetLastNMultipleChunks(t *testing.T) {
-	db, metadata, writer, cleanup := setupTestDB(t)
+	db, writer, cleanup := setupTestDB(t)
 	defer cleanup()
 
 	for i := uint64(0); i < uint64(ChunkSize*2+500); i++ {
@@ -63,7 +62,7 @@ func TestChunkReaderGetLastNMultipleChunks(t *testing.T) {
 	writer.FlushAllPartials()
 	writer.Sync()
 
-	reader := NewChunkReader(db, metadata, nil)
+	reader := NewChunkReader(db,nil)
 
 	seqs, err := reader.GetLastN(1000, 1000)
 	if err != nil {
@@ -81,7 +80,7 @@ func TestChunkReaderGetLastNMultipleChunks(t *testing.T) {
 }
 
 func TestChunkReaderGetFirstN(t *testing.T) {
-	db, metadata, writer, cleanup := setupTestDB(t)
+	db, writer, cleanup := setupTestDB(t)
 	defer cleanup()
 
 	for i := uint64(0); i < 100; i++ {
@@ -90,7 +89,7 @@ func TestChunkReaderGetFirstN(t *testing.T) {
 	writer.FlushAllPartials()
 	writer.Sync()
 
-	reader := NewChunkReader(db, metadata, nil)
+	reader := NewChunkReader(db,nil)
 
 	seqs, err := reader.GetFirstN(1000, 20)
 	if err != nil {
@@ -109,63 +108,8 @@ func TestChunkReaderGetFirstN(t *testing.T) {
 	}
 }
 
-func TestChunkReaderGetRange(t *testing.T) {
-	db, metadata, writer, cleanup := setupTestDB(t)
-	defer cleanup()
-
-	for i := uint64(0); i < 100; i++ {
-		writer.AddAllActions(1000, i)
-	}
-	writer.FlushAllPartials()
-	writer.Sync()
-
-	reader := NewChunkReader(db, metadata, nil)
-
-	seqs, err := reader.GetRange(1000, 10, 20)
-	if err != nil {
-		t.Fatalf("GetRange failed: %v", err)
-	}
-
-	if len(seqs) != 20 {
-		t.Errorf("got %d seqs, want 20", len(seqs))
-	}
-
-	if seqs[0] != 10 {
-		t.Errorf("first seq = %d, want 10", seqs[0])
-	}
-	if seqs[19] != 29 {
-		t.Errorf("last seq = %d, want 29", seqs[19])
-	}
-}
-
-func TestChunkReaderGetRangeAcrossChunks(t *testing.T) {
-	db, metadata, writer, cleanup := setupTestDB(t)
-	defer cleanup()
-
-	for i := uint64(0); i < uint64(ChunkSize+500); i++ {
-		writer.AddAllActions(1000, i)
-	}
-	writer.FlushAllPartials()
-	writer.Sync()
-
-	reader := NewChunkReader(db, metadata, nil)
-
-	seqs, err := reader.GetRange(1000, ChunkSize-5, 20)
-	if err != nil {
-		t.Fatalf("GetRange failed: %v", err)
-	}
-
-	if len(seqs) != 20 {
-		t.Errorf("got %d seqs, want 20", len(seqs))
-	}
-
-	if seqs[0] != uint64(ChunkSize-5) {
-		t.Errorf("first seq = %d, want %d", seqs[0], ChunkSize-5)
-	}
-}
-
 func TestChunkReaderGetFromCursor(t *testing.T) {
-	db, metadata, writer, cleanup := setupTestDB(t)
+	db, writer, cleanup := setupTestDB(t)
 	defer cleanup()
 
 	for i := uint64(0); i < 100; i++ {
@@ -174,7 +118,7 @@ func TestChunkReaderGetFromCursor(t *testing.T) {
 	writer.FlushAllPartials()
 	writer.Sync()
 
-	reader := NewChunkReader(db, metadata, nil)
+	reader := NewChunkReader(db,nil)
 
 	seqs, err := reader.GetFromCursor(1000, 500, 10, true)
 	if err != nil {
@@ -202,7 +146,7 @@ func TestChunkReaderGetFromCursor(t *testing.T) {
 }
 
 func TestChunkReaderContractAction(t *testing.T) {
-	db, metadata, writer, cleanup := setupTestDB(t)
+	db, writer, cleanup := setupTestDB(t)
 	defer cleanup()
 
 	for i := uint64(0); i < 50; i++ {
@@ -214,7 +158,7 @@ func TestChunkReaderContractAction(t *testing.T) {
 	writer.FlushAllPartials()
 	writer.Sync()
 
-	reader := NewChunkReader(db, metadata, nil)
+	reader := NewChunkReader(db,nil)
 
 	seqs, err := reader.GetContractActionLastN(1000, 5000, 6000, 20)
 	if err != nil {
@@ -227,7 +171,7 @@ func TestChunkReaderContractAction(t *testing.T) {
 }
 
 func TestChunkReaderContractWildcard(t *testing.T) {
-	db, metadata, writer, cleanup := setupTestDB(t)
+	db, writer, cleanup := setupTestDB(t)
 	defer cleanup()
 
 	for i := uint64(0); i < 50; i++ {
@@ -236,7 +180,7 @@ func TestChunkReaderContractWildcard(t *testing.T) {
 	writer.FlushAllPartials()
 	writer.Sync()
 
-	reader := NewChunkReader(db, metadata, nil)
+	reader := NewChunkReader(db,nil)
 
 	seqs, err := reader.GetContractWildcardLastN(1000, 5000, 20)
 	if err != nil {
@@ -249,7 +193,7 @@ func TestChunkReaderContractWildcard(t *testing.T) {
 }
 
 func TestChunkReaderWithWAL(t *testing.T) {
-	db, metadata, writer, cleanup := setupTestDB(t)
+	db, writer, cleanup := setupTestDB(t)
 	defer cleanup()
 
 	for i := uint64(0); i < 50; i++ {
@@ -266,7 +210,7 @@ func TestChunkReaderWithWAL(t *testing.T) {
 	walWriter.Flush()
 
 	walReader := NewWALReader(walIndex)
-	reader := NewChunkReader(db, metadata, walReader)
+	reader := NewChunkReader(db,walReader)
 
 	seqs, err := reader.GetLastN(1000, 20)
 	if err != nil {
@@ -283,7 +227,7 @@ func TestChunkReaderWithWAL(t *testing.T) {
 }
 
 func TestChunkReaderGetWithSeqRange(t *testing.T) {
-	db, metadata, writer, cleanup := setupTestDB(t)
+	db, writer, cleanup := setupTestDB(t)
 	defer cleanup()
 
 	for i := uint64(0); i < 100; i++ {
@@ -292,7 +236,7 @@ func TestChunkReaderGetWithSeqRange(t *testing.T) {
 	writer.FlushAllPartials()
 	writer.Sync()
 
-	reader := NewChunkReader(db, metadata, nil)
+	reader := NewChunkReader(db,nil)
 
 	seqs, err := reader.GetWithSeqRange(1000, 200, 500, 50, false)
 	if err != nil {
@@ -311,7 +255,7 @@ func TestChunkReaderGetWithSeqRange(t *testing.T) {
 }
 
 func TestChunkReaderGetWithSeqRangeDesc(t *testing.T) {
-	db, metadata, writer, cleanup := setupTestDB(t)
+	db, writer, cleanup := setupTestDB(t)
 	defer cleanup()
 
 	for i := uint64(0); i < 100; i++ {
@@ -320,7 +264,7 @@ func TestChunkReaderGetWithSeqRangeDesc(t *testing.T) {
 	writer.FlushAllPartials()
 	writer.Sync()
 
-	reader := NewChunkReader(db, metadata, nil)
+	reader := NewChunkReader(db,nil)
 
 	seqs, err := reader.GetWithSeqRange(1000, 200, 500, 50, true)
 	if err != nil {
@@ -339,7 +283,7 @@ func TestChunkReaderGetWithSeqRangeDesc(t *testing.T) {
 }
 
 func TestChunkReaderGetTotalCount(t *testing.T) {
-	db, metadata, writer, cleanup := setupTestDB(t)
+	db, writer, cleanup := setupTestDB(t)
 	defer cleanup()
 
 	for i := uint64(0); i < uint64(ChunkSize+500); i++ {
@@ -348,7 +292,7 @@ func TestChunkReaderGetTotalCount(t *testing.T) {
 	writer.FlushAllPartials()
 	writer.Sync()
 
-	reader := NewChunkReader(db, metadata, nil)
+	reader := NewChunkReader(db,nil)
 
 	count, err := reader.GetTotalCount(1000)
 	if err != nil {
@@ -362,10 +306,10 @@ func TestChunkReaderGetTotalCount(t *testing.T) {
 }
 
 func TestChunkReaderEmptyAccount(t *testing.T) {
-	db, metadata, _, cleanup := setupTestDB(t)
+	db, _, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	reader := NewChunkReader(db, metadata, nil)
+	reader := NewChunkReader(db,nil)
 
 	seqs, err := reader.GetLastN(9999, 20)
 	if err != nil {

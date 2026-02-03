@@ -30,16 +30,14 @@ type Buffer struct {
 	mergeErr     error
 	lastMergeLen int
 
-	db       *pebble.DB
-	metadata *ChunkMetadata
+	db *pebble.DB
 }
 
-func NewBuffer(db *pebble.DB, metadata *ChunkMetadata) *Buffer {
+func NewBuffer(db *pebble.DB) *Buffer {
 	b := &Buffer{
-		bufferA:  make([]Entry, 0, 1_000_000),
-		bufferB:  make([]Entry, 0, 1_000_000),
-		db:       db,
-		metadata: metadata,
+		bufferA: make([]Entry, 0, 1_000_000),
+		bufferB: make([]Entry, 0, 1_000_000),
+		db:      db,
 	}
 	b.active = &b.bufferA
 	return b
@@ -153,8 +151,7 @@ func (b *Buffer) doMerge(entries []Entry) error {
 
 func (b *Buffer) doMergeWithStats(entries []Entry) (MergeStats, error) {
 	merger := &Merger{
-		db:       b.db,
-		metadata: b.metadata,
+		db: b.db,
 	}
 	return merger.MergeEntries(entries)
 }
@@ -164,8 +161,7 @@ func (b *Buffer) Close() error {
 }
 
 type Merger struct {
-	db       *pebble.DB
-	metadata *ChunkMetadata
+	db *pebble.DB
 }
 
 func (m *Merger) MergeEntries(entries []Entry) (MergeStats, error) {
@@ -231,13 +227,8 @@ func (m *Merger) MergeEntries(entries []Entry) (MergeStats, error) {
 		return stats, err
 	}
 
-	var allActionsAdded int
 	for _, chunk := range allChunks {
 		stats.BytesWritten += int64(len(chunk.Encoded))
-		if chunk.IndexType == PrefixLegacyAccountActions {
-			m.metadata.AddAllActionsChunk(chunk.Account, chunk.BaseSeq)
-			allActionsAdded++
-		}
 	}
 
 	return stats, nil
@@ -290,7 +281,7 @@ func (m *Merger) buildAllActionsFromIndices(entries []Entry, groups []accountGro
 			var localChunks []ChunkToWrite
 
 			for g := range groupChan {
-				chunks := buildAAChunksForAccount(entries, g, m.metadata)
+				chunks := buildAAChunksForAccount(entries, g)
 				localChunks = append(localChunks, chunks...)
 			}
 
@@ -340,7 +331,7 @@ func (m *Merger) buildContractActionFromIndices(entries []Entry, groups []accoun
 			var localChunks []ChunkToWrite
 
 			for g := range groupChan {
-				chunks := buildCAChunksForAccount(entries, g, m.metadata)
+				chunks := buildCAChunksForAccount(entries, g)
 				localChunks = append(localChunks, chunks...)
 			}
 
@@ -390,7 +381,7 @@ func (m *Merger) buildContractWildcardFromIndices(entries []Entry, groups []acco
 			var localChunks []ChunkToWrite
 
 			for g := range groupChan {
-				chunks := buildCWChunksForAccount(entries, g, m.metadata)
+				chunks := buildCWChunksForAccount(entries, g)
 				localChunks = append(localChunks, chunks...)
 			}
 
@@ -411,69 +402,46 @@ func (m *Merger) buildContractWildcardFromIndices(entries []Entry, groups []acco
 	return allChunks, nil
 }
 
-func buildAAChunksForAccount(entries []Entry, g accountGroup, metadata *ChunkMetadata) []ChunkToWrite {
+func buildAAChunksForAccount(entries []Entry, g accountGroup) []ChunkToWrite {
 	sortedIndices := make([]int32, len(g.indices))
 	copy(sortedIndices, g.indices)
 
 	sortIndicesByGlobalSeq(sortedIndices, entries)
 
 	var chunks []ChunkToWrite
-	var currentSeqs []uint64
-	baseChunkID := uint32(metadata.GetAllActionsChunkCountNoLock(g.account))
-	localChunkID := uint32(0)
+	currentSeqs := make([]uint64, 0, min(len(g.indices), ChunkSize))
 
 	for _, idx := range sortedIndices {
 		currentSeqs = append(currentSeqs, entries[idx].GlobalSeq)
 
 		if len(currentSeqs) >= ChunkSize {
 			baseSeq := currentSeqs[0]
-			legacyEncoded, _ := EncodeChunk(currentSeqs)
-			leanEncoded, _ := EncodeLeanChunk(baseSeq, currentSeqs)
-			chunks = append(chunks,
-				ChunkToWrite{
-					IndexType: PrefixLegacyAccountActions,
-					Account:   g.account,
-					ChunkID:   baseChunkID + localChunkID,
-					BaseSeq:   baseSeq,
-					Encoded:   legacyEncoded,
-				},
-				ChunkToWrite{
-					IndexType: PrefixAccountActions,
-					Account:   g.account,
-					BaseSeq:   baseSeq,
-					Encoded:   leanEncoded,
-				},
-			)
-			localChunkID++
+			encoded, _ := EncodeLeanChunk(baseSeq, currentSeqs)
+			chunks = append(chunks, ChunkToWrite{
+				IndexType: PrefixAccountActions,
+				Account:   g.account,
+				BaseSeq:   baseSeq,
+				Encoded:   encoded,
+			})
 			currentSeqs = currentSeqs[:0]
 		}
 	}
 
 	if len(currentSeqs) > 0 {
 		baseSeq := currentSeqs[0]
-		legacyEncoded, _ := EncodeChunk(currentSeqs)
-		leanEncoded, _ := EncodeLeanChunk(baseSeq, currentSeqs)
-		chunks = append(chunks,
-			ChunkToWrite{
-				IndexType: PrefixLegacyAccountActions,
-				Account:   g.account,
-				ChunkID:   baseChunkID + localChunkID,
-				BaseSeq:   baseSeq,
-				Encoded:   legacyEncoded,
-			},
-			ChunkToWrite{
-				IndexType: PrefixAccountActions,
-				Account:   g.account,
-				BaseSeq:   baseSeq,
-				Encoded:   leanEncoded,
-			},
-		)
+		encoded, _ := EncodeLeanChunk(baseSeq, currentSeqs)
+		chunks = append(chunks, ChunkToWrite{
+			IndexType: PrefixAccountActions,
+			Account:   g.account,
+			BaseSeq:   baseSeq,
+			Encoded:   encoded,
+		})
 	}
 
 	return chunks
 }
 
-func buildCAChunksForAccount(entries []Entry, g accountGroup, metadata *ChunkMetadata) []ChunkToWrite {
+func buildCAChunksForAccount(entries []Entry, g accountGroup) []ChunkToWrite {
 	sortedIndices := make([]int32, len(g.indices))
 	copy(sortedIndices, g.indices)
 
@@ -481,7 +449,7 @@ func buildCAChunksForAccount(entries []Entry, g accountGroup, metadata *ChunkMet
 
 	var chunks []ChunkToWrite
 	var currentKey ContractActionKey
-	var currentSeqs []uint64
+	currentSeqs := make([]uint64, 0, min(len(g.indices), ChunkSize))
 
 	for _, idx := range sortedIndices {
 		e := &entries[idx]
@@ -535,7 +503,7 @@ func buildCAChunksForAccount(entries []Entry, g accountGroup, metadata *ChunkMet
 	return chunks
 }
 
-func buildCWChunksForAccount(entries []Entry, g accountGroup, metadata *ChunkMetadata) []ChunkToWrite {
+func buildCWChunksForAccount(entries []Entry, g accountGroup) []ChunkToWrite {
 	sortedIndices := make([]int32, len(g.indices))
 	copy(sortedIndices, g.indices)
 
@@ -543,7 +511,7 @@ func buildCWChunksForAccount(entries []Entry, g accountGroup, metadata *ChunkMet
 
 	var chunks []ChunkToWrite
 	var currentKey ContractWildcardKey
-	var currentSeqs []uint64
+	currentSeqs := make([]uint64, 0, min(len(g.indices), ChunkSize))
 
 	for _, idx := range sortedIndices {
 		e := &entries[idx]
@@ -870,15 +838,12 @@ type ChunkToWrite struct {
 	Account   uint64
 	Contract  uint64
 	Action    uint64
-	ChunkID   uint32
 	BaseSeq   uint64
 	Encoded   []byte
 }
 
 func (c *ChunkToWrite) MakeKey() []byte {
 	switch c.IndexType {
-	case PrefixLegacyAccountActions:
-		return makeLegacyAccountActionsKey(c.Account, c.ChunkID)
 	case PrefixAccountActions:
 		return makeAccountActionsKey(c.Account, c.BaseSeq)
 	case PrefixContractAction:

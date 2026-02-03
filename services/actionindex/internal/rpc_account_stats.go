@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/cockroachdb/pebble/v2"
 	"github.com/greymass/roborovski/libraries/chain"
 	"github.com/greymass/roborovski/libraries/server"
 )
@@ -71,15 +72,28 @@ func HandleAccountStats(indexes ActionIndexer, w http.ResponseWriter, r *http.Re
 	}
 
 	if totalActions > 0 {
-		firstBase, lastBase := idx.metadata.GetAllActionsSeqRange(accountID)
-
 		var firstSeq, lastSeq uint64
 
-		if firstBase > 0 {
-			firstSeq = firstBase
-		}
-		if lastBase > 0 {
-			lastSeq = lastBase
+		prefix := makeAccountActionsPrefix(accountID)
+		upperBound := incrementPrefix(prefix)
+		iter, iterErr := idx.db.NewIter(&pebble.IterOptions{
+			LowerBound: prefix,
+			UpperBound: upperBound,
+		})
+		if iterErr == nil {
+			if iter.First() {
+				_, baseSeq, ok := parseAccountActionsKey(iter.Key())
+				if ok {
+					firstSeq = baseSeq
+				}
+			}
+			if iter.Last() {
+				_, baseSeq, ok := parseAccountActionsKey(iter.Key())
+				if ok {
+					lastSeq = baseSeq
+				}
+			}
+			iter.Close()
 		}
 
 		for _, seq := range walSeqs {

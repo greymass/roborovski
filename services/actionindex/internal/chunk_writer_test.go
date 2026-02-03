@@ -15,9 +15,8 @@ func TestChunkWriterBasicAdd(t *testing.T) {
 	}
 	defer db.Close()
 
-	metadata := NewChunkMetadata()
 	timeMap := NewTimeMapper()
-	w := NewChunkWriter(db, metadata, timeMap)
+	w := NewChunkWriter(db, timeMap)
 
 	for i := uint64(0); i < 100; i++ {
 		w.AddAllActions(1000, i)
@@ -45,8 +44,7 @@ func TestChunkWriterFlushOnFull(t *testing.T) {
 	}
 	defer db.Close()
 
-	metadata := NewChunkMetadata()
-	w := NewChunkWriter(db, metadata, nil)
+	w := NewChunkWriter(db, nil)
 
 	for i := uint64(0); i < ChunkSize; i++ {
 		w.AddAllActions(1000, i*10)
@@ -59,10 +57,6 @@ func TestChunkWriterFlushOnFull(t *testing.T) {
 	if stats.SequencesWritten != ChunkSize {
 		t.Errorf("sequences written = %d, want %d", stats.SequencesWritten, ChunkSize)
 	}
-
-	if metadata.GetAllActionsChunkCount(1000) != 1 {
-		t.Errorf("metadata chunk count = %d, want 1", metadata.GetAllActionsChunkCount(1000))
-	}
 }
 
 func TestChunkWriterMultipleChunks(t *testing.T) {
@@ -73,8 +67,7 @@ func TestChunkWriterMultipleChunks(t *testing.T) {
 	}
 	defer db.Close()
 
-	metadata := NewChunkMetadata()
-	w := NewChunkWriter(db, metadata, nil)
+	w := NewChunkWriter(db, nil)
 
 	for i := uint64(0); i < ChunkSize*3+500; i++ {
 		w.AddAllActions(1000, i)
@@ -89,10 +82,6 @@ func TestChunkWriterMultipleChunks(t *testing.T) {
 	if a != 500 {
 		t.Errorf("pending = %d, want 500", a)
 	}
-
-	if metadata.GetAllActionsChunkCount(1000) != 3 {
-		t.Errorf("metadata chunk count = %d, want 3", metadata.GetAllActionsChunkCount(1000))
-	}
 }
 
 func TestChunkWriterFlushAllPartials(t *testing.T) {
@@ -103,8 +92,7 @@ func TestChunkWriterFlushAllPartials(t *testing.T) {
 	}
 	defer db.Close()
 
-	metadata := NewChunkMetadata()
-	w := NewChunkWriter(db, metadata, nil)
+	w := NewChunkWriter(db, nil)
 
 	for i := uint64(0); i < 100; i++ {
 		w.AddAllActions(1000, i)
@@ -129,10 +117,6 @@ func TestChunkWriterFlushAllPartials(t *testing.T) {
 	if a != 0 || ca != 0 || cw != 0 {
 		t.Errorf("pending after flush: a=%d, ca=%d, cw=%d, want all 0", a, ca, cw)
 	}
-
-	if metadata.GetAllActionsChunkCount(1000) != 1 {
-		t.Errorf("allActions chunk count = %d, want 1", metadata.GetAllActionsChunkCount(1000))
-	}
 }
 
 func TestChunkWriterFlushStalePartials(t *testing.T) {
@@ -143,8 +127,7 @@ func TestChunkWriterFlushStalePartials(t *testing.T) {
 	}
 	defer db.Close()
 
-	metadata := NewChunkMetadata()
-	w := NewChunkWriter(db, metadata, nil)
+	w := NewChunkWriter(db, nil)
 
 	for i := uint64(0); i < 100; i++ {
 		w.AddAllActions(1000, i)
@@ -168,8 +151,7 @@ func TestChunkWriterReadBackFromDB(t *testing.T) {
 	}
 	defer db.Close()
 
-	metadata := NewChunkMetadata()
-	w := NewChunkWriter(db, metadata, nil)
+	w := NewChunkWriter(db, nil)
 
 	seqs := make([]uint64, ChunkSize)
 	for i := range seqs {
@@ -181,16 +163,16 @@ func TestChunkWriterReadBackFromDB(t *testing.T) {
 		t.Fatalf("Sync failed: %v", err)
 	}
 
-	key := makeLegacyAccountActionsKey(1000, 0)
+	key := makeAccountActionsKey(1000, 0)
 	val, closer, err := db.Get(key)
 	if err != nil {
 		t.Fatalf("failed to read chunk from db: %v", err)
 	}
 
-	chunk, err := DecodeChunk(val)
+	chunk, err := DecodeLeanChunk(0, val)
 	closer.Close()
 	if err != nil {
-		t.Fatalf("DecodeChunk failed: %v", err)
+		t.Fatalf("DecodeLeanChunk failed: %v", err)
 	}
 
 	if len(chunk.Seqs) != ChunkSize {
@@ -212,9 +194,8 @@ func TestChunkWriterCommitWithProperties(t *testing.T) {
 	}
 	defer db.Close()
 
-	metadata := NewChunkMetadata()
 	timeMap := NewTimeMapper()
-	w := NewChunkWriter(db, metadata, timeMap)
+	w := NewChunkWriter(db, timeMap)
 
 	for i := uint64(0); i < 100; i++ {
 		w.AddAllActions(1000, i)
@@ -262,8 +243,7 @@ func TestChunkWriterClearPartials(t *testing.T) {
 	}
 	defer db.Close()
 
-	metadata := NewChunkMetadata()
-	w := NewChunkWriter(db, metadata, nil)
+	w := NewChunkWriter(db, nil)
 
 	for i := uint64(0); i < 100; i++ {
 		w.AddAllActions(1000, i)
@@ -291,8 +271,7 @@ func TestChunkWriterMultipleAccounts(t *testing.T) {
 	}
 	defer db.Close()
 
-	metadata := NewChunkMetadata()
-	w := NewChunkWriter(db, metadata, nil)
+	w := NewChunkWriter(db, nil)
 
 	for acc := uint64(1); acc <= 10; acc++ {
 		for i := uint64(0); i < ChunkSize+100; i++ {
@@ -303,12 +282,5 @@ func TestChunkWriterMultipleAccounts(t *testing.T) {
 	stats := w.Stats()
 	if stats.ChunksWritten != 10 {
 		t.Errorf("chunks written = %d, want 10 (one per account)", stats.ChunksWritten)
-	}
-
-	for acc := uint64(1); acc <= 10; acc++ {
-		count := metadata.GetAllActionsChunkCount(acc)
-		if count != 1 {
-			t.Errorf("account %d chunk count = %d, want 1", acc, count)
-		}
 	}
 }

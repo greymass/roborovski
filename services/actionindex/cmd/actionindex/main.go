@@ -113,17 +113,23 @@ func main() {
 		logger.Printf("startup", "  abi-source: (not set, action data will not be decoded)")
 	}
 
-	memTableSizeMB := cfg.SyncMemoryGB * 1024 / 4
+	memTableSizeMB := cfg.MemTableSizeMB
+	if memTableSizeMB <= 0 {
+		memTableSizeMB = 256
+	}
 	if memTableSizeMB < 64 {
-		memTableSizeMB = 64 // Minimum 64 MB
+		memTableSizeMB = 64
 	}
 	if memTableSizeMB > 2048 {
-		memTableSizeMB = 2048 // Cap at 2 GB per memtable for reasonable flush times
+		memTableSizeMB = 2048
 	}
 
-	memTableStopThreshold := (cfg.SyncMemoryGB * 1024) / memTableSizeMB
+	memTableStopThreshold := cfg.MemTableStopThreshold
+	if memTableStopThreshold <= 0 {
+		memTableStopThreshold = (cfg.SyncMemoryGB * 1024) / memTableSizeMB
+	}
 	if memTableStopThreshold < 4 {
-		memTableStopThreshold = 4 // Minimum 4
+		memTableStopThreshold = 4
 	}
 	totalMemTableBuffer := memTableSizeMB * memTableStopThreshold
 
@@ -226,94 +232,6 @@ func main() {
 			logger.Fatal("Compaction failed: %v", err)
 		}
 		logger.Printf("startup", "Compaction complete in %v", time.Since(start))
-		store.Close()
-		logger.Printf("startup", "Done")
-		return
-	}
-
-	if cfg.MigrateMetadata {
-		hasLegacy, hasNew := internal.CheckMetadataMigrationNeeded(store.DB())
-		if !hasLegacy {
-			logger.Printf("startup", "No legacy metadata indexes found (0x13-0x15), nothing to migrate")
-			store.Close()
-			return
-		}
-		if hasNew {
-			logger.Printf("startup", "WARNING: New metadata indexes already exist (0x90-0x92)")
-			logger.Printf("startup", "Run with --cleanup-metadata to remove legacy indexes after verifying migration")
-		}
-
-		logger.Printf("startup", "Migrating metadata indexes (0x13-0x15 → 0x90-0x92)...")
-		start := time.Now()
-
-		stats, err := internal.MigrateMetadataIndexes(store.DB())
-		if err != nil {
-			logger.Fatal("Migration failed: %v", err)
-		}
-
-		logger.Printf("startup", "Migration complete in %v", time.Since(start))
-		logger.Printf("startup", "  Properties: %d", stats.PropertiesMigrated)
-		logger.Printf("startup", "  WAL keys: %d", stats.WALKeysMigrated)
-		logger.Printf("startup", "  TimeMap keys: %d", stats.TimeMapMigrated)
-		logger.Printf("startup", "  Bytes read: %d, written: %d", stats.BytesRead, stats.BytesWritten)
-		logger.Printf("startup", "")
-		logger.Printf("startup", "Next steps:")
-		logger.Printf("startup", "  1. Verify service works correctly")
-		logger.Printf("startup", "  2. Run with --cleanup-metadata to remove legacy indexes")
-		logger.Printf("startup", "  3. Run with --compact to reclaim space")
-		store.Close()
-		logger.Printf("startup", "Done")
-		return
-	}
-
-	if cfg.CleanupMetadata {
-		hasLegacy, hasNew := internal.CheckMetadataMigrationNeeded(store.DB())
-		if !hasLegacy {
-			logger.Printf("startup", "No legacy metadata indexes found (0x13-0x15), nothing to cleanup")
-			store.Close()
-			return
-		}
-		if !hasNew {
-			logger.Fatal("New metadata indexes not found (0x90-0x92). Run --migrate-metadata first!")
-		}
-
-		logger.Printf("startup", "Deleting legacy metadata indexes (0x13-0x15)...")
-		start := time.Now()
-
-		stats, err := internal.CleanupLegacyMetadata(store.DB())
-		if err != nil {
-			logger.Fatal("Cleanup failed: %v", err)
-		}
-
-		logger.Printf("startup", "Cleanup complete in %v", time.Since(start))
-		logger.Printf("startup", "  Properties deleted: %d", stats.PropertiesDeleted)
-		logger.Printf("startup", "  WAL deleted: %d", stats.WALDeleted)
-		logger.Printf("startup", "  TimeMap deleted: %d", stats.TimeMapDeleted)
-		logger.Printf("startup", "  Bytes marked for deletion: %d", stats.BytesDeleted)
-		logger.Printf("startup", "")
-		logger.Printf("startup", "Run with --compact to reclaim disk space")
-		store.Close()
-		logger.Printf("startup", "Done")
-		return
-	}
-
-	if cfg.RebuildMetadata {
-		logger.Printf("startup", "Rebuilding chunk metadata from database...")
-		start := time.Now()
-
-		metadata, err := internal.RebuildChunkMetadataFromDB(store.DB())
-		if err != nil {
-			logger.Fatal("Metadata rebuild failed: %v", err)
-		}
-
-		logger.Printf("startup", "Rebuilt metadata: %d accounts", metadata.Stats())
-
-		metadataPath := filepath.Join(cfg.IndexStorage, "chunk_metadata.bin")
-		if err := metadata.SaveToFile(metadataPath); err != nil {
-			logger.Fatal("Failed to save metadata: %v", err)
-		}
-
-		logger.Printf("startup", "Metadata rebuild complete in %v, saved to %s", time.Since(start), metadataPath)
 		store.Close()
 		logger.Printf("startup", "Done")
 		return

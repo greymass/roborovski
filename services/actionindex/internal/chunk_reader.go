@@ -3,16 +3,12 @@ package internal
 import (
 	"encoding/binary"
 	"sort"
-	"time"
 
 	"github.com/cockroachdb/pebble/v2"
-	"github.com/greymass/roborovski/libraries/chain"
-	"github.com/greymass/roborovski/libraries/logger"
 )
 
 type ChunkReader struct {
 	db        *pebble.DB
-	metadata  *ChunkMetadata
 	walReader *WALReader
 }
 
@@ -58,30 +54,14 @@ func (f seqRangeFilter) chunkAboveMax(baseSeq uint64) bool {
 	return f.hasRange && f.maxSeq > 0 && baseSeq > f.maxSeq
 }
 
-func NewChunkReader(db *pebble.DB, metadata *ChunkMetadata, walReader *WALReader) *ChunkReader {
+func NewChunkReader(db *pebble.DB, walReader *WALReader) *ChunkReader {
 	return &ChunkReader{
 		db:        db,
-		metadata:  metadata,
 		walReader: walReader,
 	}
 }
 
 func (r *ChunkReader) GetLastN(account uint64, n int) ([]uint64, error) {
-	t0 := time.Now()
-	chunkCount := r.metadata.GetAllActionsChunkCount(account)
-	t1 := time.Now()
-	if chunkCount == 0 {
-		if r.walReader != nil {
-			seqs, err := r.walReader.GetEntriesForAccount(account)
-			logger.Printf("debug-perf", "[GetLastN] account=%s chunkCount=0 walScan=%v", chain.NameToString(account), time.Since(t1))
-			return seqs, err
-		}
-		return nil, nil
-	}
-
-	_, lastBase := r.metadata.GetAllActionsSeqRange(account)
-	t2 := time.Now()
-
 	prefix := makeAccountActionsPrefix(account)
 	upperBound := incrementPrefix(prefix)
 
@@ -89,7 +69,6 @@ func (r *ChunkReader) GetLastN(account uint64, n int) ([]uint64, error) {
 		LowerBound: prefix,
 		UpperBound: upperBound,
 	})
-	t3 := time.Now()
 	if err != nil {
 		return nil, err
 	}
@@ -97,11 +76,7 @@ func (r *ChunkReader) GetLastN(account uint64, n int) ([]uint64, error) {
 
 	var seqs []uint64
 
-	seekKey := makeAccountActionsKey(account, lastBase)
-	found := iter.SeekGE(seekKey)
-	t4 := time.Now()
-
-	for ; iter.Valid() && len(seqs) < n; iter.Prev() {
+	for iter.Last(); iter.Valid() && len(seqs) < n; iter.Prev() {
 		_, baseSeq, ok := parseAccountActionsKey(iter.Key())
 		if !ok {
 			continue
@@ -118,7 +93,6 @@ func (r *ChunkReader) GetLastN(account uint64, n int) ([]uint64, error) {
 		}
 		seqs = append(chunk.Seqs[start:], seqs...)
 	}
-	t5 := time.Now()
 
 	if r.walReader != nil {
 		ws, err := r.walReader.GetEntriesForAccount(account)
@@ -129,25 +103,11 @@ func (r *ChunkReader) GetLastN(account uint64, n int) ([]uint64, error) {
 			}
 		}
 	}
-	t6 := time.Now()
-
-	logger.Printf("debug-perf", "[GetLastN] account=%s meta=%v seqRange=%v newIter=%v seekGE=%v (found=%v) loop=%v wal=%v total=%v",
-		chain.NameToString(account), t1.Sub(t0), t2.Sub(t1), t3.Sub(t2), t4.Sub(t3), found, t5.Sub(t4), t6.Sub(t5), t6.Sub(t0))
 
 	return seqs, iter.Error()
 }
 
 func (r *ChunkReader) GetFirstN(account uint64, n int) ([]uint64, error) {
-	chunkCount := r.metadata.GetAllActionsChunkCount(account)
-	if chunkCount == 0 {
-		if r.walReader != nil {
-			return r.walReader.GetEntriesForAccount(account)
-		}
-		return nil, nil
-	}
-
-	firstBase, _ := r.metadata.GetAllActionsSeqRange(account)
-
 	prefix := makeAccountActionsPrefix(account)
 	upperBound := incrementPrefix(prefix)
 
@@ -162,8 +122,7 @@ func (r *ChunkReader) GetFirstN(account uint64, n int) ([]uint64, error) {
 
 	var seqs []uint64
 
-	seekKey := makeAccountActionsKey(account, firstBase)
-	for iter.SeekGE(seekKey); iter.Valid() && len(seqs) < n; iter.Next() {
+	for iter.First(); iter.Valid() && len(seqs) < n; iter.Next() {
 		_, baseSeq, ok := parseAccountActionsKey(iter.Key())
 		if !ok {
 			continue
@@ -189,55 +148,6 @@ func (r *ChunkReader) GetFirstN(account uint64, n int) ([]uint64, error) {
 				seqs = seqs[:n]
 			}
 		}
-	}
-
-	return seqs, iter.Error()
-}
-
-func (r *ChunkReader) GetRange(account uint64, pos, count int) ([]uint64, error) {
-	if pos < 0 {
-		return r.GetLastN(account, count)
-	}
-
-	startChunk := uint32(pos / ChunkSize)
-	offsetInChunk := pos % ChunkSize
-
-	key := makeLegacyAccountActionsKey(account, startChunk)
-	prefix := makeLegacyAccountActionsPrefix(account)
-	upperBound := incrementPrefix(prefix)
-
-	iter, err := r.db.NewIter(&pebble.IterOptions{
-		LowerBound: prefix,
-		UpperBound: upperBound,
-	})
-	if err != nil {
-		return nil, err
-	}
-	defer iter.Close()
-
-	var seqs []uint64
-
-	iter.SeekGE(key)
-	first := true
-
-	for iter.Valid() && len(seqs) < count {
-		chunk, err := DecodeChunk(iter.Value())
-		if err != nil {
-			iter.Next()
-			continue
-		}
-
-		startIdx := 0
-		if first {
-			startIdx = offsetInChunk
-			first = false
-		}
-
-		for i := startIdx; i < len(chunk.Seqs) && len(seqs) < count; i++ {
-			seqs = append(seqs, chunk.Seqs[i])
-		}
-
-		iter.Next()
 	}
 
 	return seqs, iter.Error()

@@ -7,6 +7,11 @@ type Config struct {
 	IndexStorage  string `name:"index-storage" alias:"index-path,path" default:"./actionindex.db" help:"Path to Pebble index database"`
 	SyncSource    string `name:"sync-source" help:"Optional sync source (stream:// or http://). If set, uses this for syncing while history-source is used for queries."`
 
+	// Database maintenance
+	Inspect   bool `help:"Inspect Pebble database on disk and report format/version info, then exit"`
+	Compact   bool `help:"Run full Pebble compaction on startup, then exit"`
+	UpgradeDB bool `name:"upgrade-db" help:"Upgrade Pebble database format to latest version, then exit"`
+
 	// Server
 	HTTPListen    string `name:"http-listen" default:":9410" help:"HTTP API TCP address ('none' to disable)"`
 	HTTPSocket    string `name:"http-socket" default:"./actionindex.sock" help:"HTTP API Unix socket ('none' to disable)"`
@@ -18,12 +23,6 @@ type Config struct {
 	// Streaming
 	StreamMaxClients        int `name:"stream-max-clients" default:"100" help:"Maximum concurrent streaming clients"`
 	StreamHeartbeatInterval int `name:"stream-heartbeat" default:"30" help:"Streaming heartbeat interval in seconds"`
-	Inspect          bool   `help:"Inspect Pebble database on disk and report format/version info, then exit"`
-	Compact          bool   `help:"Run full Pebble compaction on startup, then exit"`
-	UpgradeDB        bool   `name:"upgrade-db" help:"Upgrade Pebble database format to latest version, then exit"`
-	MigrateMetadata  bool   `name:"migrate-metadata" help:"Migrate metadata indexes (0x13-0x15 → 0x90-0x92), then exit"`
-	CleanupMetadata  bool   `name:"cleanup-metadata" help:"Delete legacy metadata indexes (0x13-0x15) after migration, then exit"`
-	RebuildMetadata  bool   `name:"rebuild-metadata" help:"Rebuild chunk metadata from database, then exit"`
 
 	// Performance tuning
 	BlockCacheSizeMB      int64 `name:"block-cache-size-mb" alias:"block-cache-size" default:"2048" help:"Cache size in MB for parsed block data. 0 to disable."`

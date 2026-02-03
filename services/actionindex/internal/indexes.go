@@ -2,7 +2,6 @@ package internal
 
 import (
 	"fmt"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -25,7 +24,6 @@ type Indexes struct {
 	mu sync.RWMutex
 	db *pebble.DB
 
-	metadata    *ChunkMetadata
 	timeMapper  *TimeMapper
 	chunkWriter *ChunkWriter
 	chunkReader *ChunkReader
@@ -46,25 +44,7 @@ type Indexes struct {
 }
 
 func NewIndexes(db *pebble.DB, dataDir string) (*Indexes, error) {
-	metadata := NewChunkMetadata()
 	timeMapper := NewTimeMapper()
-
-	metadataPath := filepath.Join(dataDir, "chunk_metadata.bin")
-	logger.Printf("startup", "Loading chunk metadata from %s...", metadataPath)
-	loadedMetadata, err := LoadChunkMetadataFromFile(metadataPath)
-	if err == nil {
-		metadata = loadedMetadata
-		logger.Printf("startup", "ChunkMetadata loaded: %d accounts", metadata.Stats())
-	} else {
-		logger.Printf("startup", "Failed to load metadata file (%v), rebuilding from DB...", err)
-		rebuilt, rebuildErr := RebuildChunkMetadataFromDB(db)
-		if rebuildErr == nil {
-			metadata = rebuilt
-			logger.Printf("startup", "Rebuilt metadata from DB: %d accounts", metadata.Stats())
-		} else {
-			logger.Printf("startup", "Warning: failed to rebuild metadata: %v", rebuildErr)
-		}
-	}
 
 	if err := timeMapper.LoadFromDB(db); err != nil {
 		logger.Printf("startup", "Warning: failed to load time mapper: %v", err)
@@ -78,15 +58,14 @@ func NewIndexes(db *pebble.DB, dataDir string) (*Indexes, error) {
 		logger.Printf("startup", "Warning: failed to load WAL index: %v", err)
 	}
 
-	chunkWriter := NewChunkWriter(db, metadata, timeMapper)
+	chunkWriter := NewChunkWriter(db, timeMapper)
 	walWriter := NewWALWriter(db, walIndex)
 	walReader := NewWALReader(walIndex)
-	chunkReader := NewChunkReader(db, metadata, walReader)
-	walCompactor := NewWALCompactor(db, walIndex, metadata, chunkWriter)
+	chunkReader := NewChunkReader(db, walReader)
+	walCompactor := NewWALCompactor(db, walIndex, chunkWriter)
 
 	idx := &Indexes{
 		db:           db,
-		metadata:     metadata,
 		timeMapper:   timeMapper,
 		chunkWriter:  chunkWriter,
 		chunkReader:  chunkReader,
@@ -94,7 +73,7 @@ func NewIndexes(db *pebble.DB, dataDir string) (*Indexes, error) {
 		walWriter:    walWriter,
 		walCompactor: walCompactor,
 		walReader:    walReader,
-		bulkBuffer:   NewBuffer(db, metadata),
+		bulkBuffer:   NewBuffer(db),
 		bulkMode:     true,
 		dataDir:      dataDir,
 	}
@@ -478,13 +457,10 @@ func (idx *Indexes) LoadActionsWithDateRange(account uint64, contract, action st
 				fmt.Sprintf("%s::* seqRange=[%d,%d]", contract, minSeq, maxSeq))
 		}
 	} else {
-		chunkCount := idx.metadata.GetAllActionsChunkCount(account)
-		prevBase, nextBase, chunkID := idx.metadata.GetChunkBaseSeqsNear(account, minSeq)
 		seqs, err = idx.chunkReader.GetWithSeqRange(account, minSeq, maxSeq, limit, descending)
 		if trace.Enabled() {
 			trace.AddStepWithCount("DateRange", "chunk-read", time.Since(start), len(seqs),
-				fmt.Sprintf("chunks=%d chunkID=%d prevBase=%d nextBase=%d query=[%d,%d]",
-					chunkCount, chunkID, prevBase, nextBase, minSeq, maxSeq))
+				fmt.Sprintf("query=[%d,%d]", minSeq, maxSeq))
 		}
 	}
 
@@ -511,15 +487,6 @@ func (idx *Indexes) Close() error {
 		return err
 	}
 
-	logger.Printf("startup", "Saving metadata: %d accounts", idx.metadata.Stats())
-
-	metadataPath := filepath.Join(idx.dataDir, "chunk_metadata.bin")
-	logger.Printf("startup", "Metadata path: %s", metadataPath)
-	if err := idx.metadata.SaveToFile(metadataPath); err != nil {
-		return err
-	}
-	logger.Printf("startup", "Metadata saved successfully")
-
 	return nil
 }
 
@@ -533,7 +500,17 @@ func (idx *Indexes) Diagnostics() ChunkWriterDiagnostics {
 }
 
 func (idx *Indexes) HasAccount(account uint64) bool {
-	return idx.metadata.GetAllActionsChunkCount(account) > 0
+	prefix := makeAccountActionsPrefix(account)
+	upperBound := incrementPrefix(prefix)
+	iter, err := idx.db.NewIter(&pebble.IterOptions{
+		LowerBound: prefix,
+		UpperBound: upperBound,
+	})
+	if err != nil {
+		return false
+	}
+	defer iter.Close()
+	return iter.First()
 }
 
 func dateHourToHourNum(dateHour []byte) uint32 {

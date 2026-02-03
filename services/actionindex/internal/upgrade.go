@@ -1,11 +1,8 @@
 package internal
 
 import (
-	"bytes"
 	"fmt"
-	"io"
 
-	"github.com/RoaringBitmap/roaring/roaring64"
 	pebblev1 "github.com/cockroachdb/pebble"
 	bloomv1 "github.com/cockroachdb/pebble/bloom"
 	pebblev2 "github.com/cockroachdb/pebble/v2"
@@ -14,55 +11,6 @@ import (
 	"github.com/cockroachdb/pebble/v2/vfs"
 	"github.com/greymass/roborovski/libraries/logger"
 )
-
-var v1BitmapMerger = &pebblev1.Merger{
-	Name: "roaring64_bitmap_or",
-	Merge: func(key, value []byte) (pebblev1.ValueMerger, error) {
-		bm := roaring64.New()
-		if len(value) > 0 {
-			if _, err := bm.ReadFrom(bytes.NewReader(value)); err != nil {
-				return nil, err
-			}
-		}
-		return &v1BitmapValueMerger{bitmap: bm}, nil
-	},
-}
-
-type v1BitmapValueMerger struct {
-	bitmap *roaring64.Bitmap
-}
-
-func (m *v1BitmapValueMerger) MergeNewer(value []byte) error {
-	if len(value) == 0 {
-		return nil
-	}
-	other := roaring64.New()
-	if _, err := other.ReadFrom(bytes.NewReader(value)); err != nil {
-		return err
-	}
-	m.bitmap.Or(other)
-	return nil
-}
-
-func (m *v1BitmapValueMerger) MergeOlder(value []byte) error {
-	if len(value) == 0 {
-		return nil
-	}
-	other := roaring64.New()
-	if _, err := other.ReadFrom(bytes.NewReader(value)); err != nil {
-		return err
-	}
-	m.bitmap.Or(other)
-	return nil
-}
-
-func (m *v1BitmapValueMerger) Finish(includesBase bool) ([]byte, io.Closer, error) {
-	var buf bytes.Buffer
-	if _, err := m.bitmap.WriteTo(&buf); err != nil {
-		return nil, nil, err
-	}
-	return buf.Bytes(), nil, nil
-}
 
 type v1PebbleLogger struct{}
 
@@ -113,7 +61,6 @@ func UpgradeDatabase(path string) error {
 func upgradeWithV1(path string) error {
 	opts := &pebblev1.Options{
 		Logger: v1PebbleLogger{},
-		Merger: v1BitmapMerger,
 		Levels: []pebblev1.LevelOptions{
 			{FilterPolicy: bloomv1.FilterPolicy(10), Compression: pebblev1.SnappyCompression},
 			{FilterPolicy: bloomv1.FilterPolicy(10), Compression: pebblev1.SnappyCompression},
@@ -146,7 +93,6 @@ func upgradeWithV2(path string) error {
 
 	opts := &pebblev2.Options{
 		Logger: pebbleLogger{},
-		Merger: legacyBitmapMerger,
 		Levels: [7]pebblev2.LevelOptions{
 			{FilterPolicy: bloomv2.FilterPolicy(10), Compression: snappyFn},
 			{FilterPolicy: bloomv2.FilterPolicy(10), Compression: snappyFn},

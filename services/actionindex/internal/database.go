@@ -1,67 +1,15 @@
 package internal
 
 import (
-	"bytes"
 	"fmt"
-	"io"
 	"strings"
 	"time"
 
-	"github.com/RoaringBitmap/roaring/roaring64"
 	"github.com/cockroachdb/pebble/v2"
 	"github.com/cockroachdb/pebble/v2/bloom"
 	"github.com/cockroachdb/pebble/v2/sstable/block"
 	"github.com/greymass/roborovski/libraries/logger"
 )
-
-var legacyBitmapMerger = &pebble.Merger{
-	Name: "roaring64_bitmap_or",
-	Merge: func(key, value []byte) (pebble.ValueMerger, error) {
-		bm := roaring64.New()
-		if len(value) > 0 {
-			if _, err := bm.ReadFrom(bytes.NewReader(value)); err != nil {
-				return nil, err
-			}
-		}
-		return &bitmapValueMerger{bitmap: bm}, nil
-	},
-}
-
-type bitmapValueMerger struct {
-	bitmap *roaring64.Bitmap
-}
-
-func (m *bitmapValueMerger) MergeNewer(value []byte) error {
-	if len(value) == 0 {
-		return nil
-	}
-	other := roaring64.New()
-	if _, err := other.ReadFrom(bytes.NewReader(value)); err != nil {
-		return err
-	}
-	m.bitmap.Or(other)
-	return nil
-}
-
-func (m *bitmapValueMerger) MergeOlder(value []byte) error {
-	if len(value) == 0 {
-		return nil
-	}
-	other := roaring64.New()
-	if _, err := other.ReadFrom(bytes.NewReader(value)); err != nil {
-		return err
-	}
-	m.bitmap.Or(other)
-	return nil
-}
-
-func (m *bitmapValueMerger) Finish(includesBase bool) ([]byte, io.Closer, error) {
-	var buf bytes.Buffer
-	if _, err := m.bitmap.WriteTo(&buf); err != nil {
-		return nil, nil, err
-	}
-	return buf.Bytes(), nil, nil
-}
 
 type pebbleLogger struct{}
 
@@ -197,7 +145,6 @@ func NewStore(path string, readOnly bool, cfg StoreConfig) (*Store, error) {
 	opts := &pebble.Options{
 		Logger:                      plog,
 		EventListener:               &eventListener,
-		Merger:                      legacyBitmapMerger,
 		Cache:                       cache,
 		MemTableSize:                uint64(memTableSize),
 		MemTableStopWritesThreshold: memTableStopThreshold,

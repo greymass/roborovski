@@ -134,8 +134,7 @@ func TestWALCompactorBasic(t *testing.T) {
 	}
 	defer db.Close()
 
-	metadata := NewChunkMetadata()
-	chunkWriter := NewChunkWriter(db, metadata, nil)
+	chunkWriter := NewChunkWriter(db, nil)
 	walIndex := NewWALIndex()
 
 	walWriter := NewWALWriter(db, walIndex)
@@ -149,7 +148,7 @@ func TestWALCompactorBasic(t *testing.T) {
 		t.Fatalf("WAL flush failed: %v", err)
 	}
 
-	compactor := NewWALCompactor(db, walIndex, metadata, chunkWriter)
+	compactor := NewWALCompactor(db, walIndex, chunkWriter)
 
 	count := compactor.WALCount()
 	if count != 150 {
@@ -172,13 +171,6 @@ func TestWALCompactorBasic(t *testing.T) {
 	if stats.EntriesCompacted != 150 {
 		t.Errorf("entries compacted = %d, want 150", stats.EntriesCompacted)
 	}
-
-	if metadata.GetAllActionsChunkCount(1000) != 1 {
-		t.Errorf("account 1000 chunk count = %d, want 1", metadata.GetAllActionsChunkCount(1000))
-	}
-	if metadata.GetAllActionsChunkCount(2000) != 1 {
-		t.Errorf("account 2000 chunk count = %d, want 1", metadata.GetAllActionsChunkCount(2000))
-	}
 }
 
 func TestWALCompactorMultipleRuns(t *testing.T) {
@@ -189,10 +181,9 @@ func TestWALCompactorMultipleRuns(t *testing.T) {
 	}
 	defer db.Close()
 
-	metadata := NewChunkMetadata()
-	chunkWriter := NewChunkWriter(db, metadata, nil)
+	chunkWriter := NewChunkWriter(db, nil)
 	walIndex := NewWALIndex()
-	compactor := NewWALCompactor(db, walIndex, metadata, chunkWriter)
+	compactor := NewWALCompactor(db, walIndex, chunkWriter)
 
 	walWriter := NewWALWriter(db, walIndex)
 	for i := uint64(0); i < 50; i++ {
@@ -224,10 +215,9 @@ func TestWALCompactorStartStop(t *testing.T) {
 	}
 	defer db.Close()
 
-	metadata := NewChunkMetadata()
-	chunkWriter := NewChunkWriter(db, metadata, nil)
+	chunkWriter := NewChunkWriter(db, nil)
 	walIndex := NewWALIndex()
-	compactor := NewWALCompactor(db, walIndex, metadata, chunkWriter)
+	compactor := NewWALCompactor(db, walIndex, chunkWriter)
 
 	walWriter := NewWALWriter(db, walIndex)
 	for i := uint64(0); i < 100; i++ {
@@ -308,10 +298,9 @@ func TestWALCompactorEmptyWAL(t *testing.T) {
 	}
 	defer db.Close()
 
-	metadata := NewChunkMetadata()
-	chunkWriter := NewChunkWriter(db, metadata, nil)
+	chunkWriter := NewChunkWriter(db, nil)
 	walIndex := NewWALIndex()
-	compactor := NewWALCompactor(db, walIndex, metadata, chunkWriter)
+	compactor := NewWALCompactor(db, walIndex, chunkWriter)
 
 	if err := compactor.Compact(); err != nil {
 		t.Fatalf("Compact on empty WAL failed: %v", err)
@@ -402,8 +391,7 @@ func TestWALCompactorCreatesChunks(t *testing.T) {
 	}
 	defer db.Close()
 
-	metadata := NewChunkMetadata()
-	chunkWriter := NewChunkWriter(db, metadata, nil)
+	chunkWriter := NewChunkWriter(db, nil)
 	walIndex := NewWALIndex()
 
 	walWriter := NewWALWriter(db, walIndex)
@@ -412,25 +400,20 @@ func TestWALCompactorCreatesChunks(t *testing.T) {
 	}
 	walWriter.Flush()
 
-	compactor := NewWALCompactor(db, walIndex, metadata, chunkWriter)
+	compactor := NewWALCompactor(db, walIndex, chunkWriter)
 	if err := compactor.Compact(); err != nil {
 		t.Fatalf("Compact failed: %v", err)
 	}
 
-	if metadata.GetAllActionsChunkCount(1000) != 2 {
-		t.Errorf("should create 2 chunks (1 full + 1 partial), got %d",
-			metadata.GetAllActionsChunkCount(1000))
-	}
-
-	key := makeLegacyAccountActionsKey(1000, 0)
+	key := makeAccountActionsKey(1000, 0)
 	val, closer, err := db.Get(key)
 	if err != nil {
 		t.Fatalf("failed to read chunk 0: %v", err)
 	}
-	chunk, err := DecodeChunk(val)
+	chunk, err := DecodeLeanChunk(0, val)
 	closer.Close()
 	if err != nil {
-		t.Fatalf("DecodeChunk failed: %v", err)
+		t.Fatalf("DecodeLeanChunk failed: %v", err)
 	}
 	if len(chunk.Seqs) != ChunkSize {
 		t.Errorf("chunk 0 size = %d, want %d", len(chunk.Seqs), ChunkSize)

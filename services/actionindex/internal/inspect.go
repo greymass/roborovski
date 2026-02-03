@@ -260,7 +260,6 @@ func inspectLiveMetrics(path string) {
 	opts := &pebble.Options{
 		ReadOnly: true,
 		Logger:   pebbleLogger{},
-		Merger:   legacyBitmapMerger,
 		Levels: [7]pebble.LevelOptions{
 			{FilterPolicy: bloom.FilterPolicy(10), Compression: snappyFn},
 			{FilterPolicy: bloom.FilterPolicy(10), Compression: snappyFn},
