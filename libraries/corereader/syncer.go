@@ -22,7 +22,7 @@ type SyncProgress struct {
 	CurrentBlock  uint32
 	EndBlock      uint32
 	BlocksPerSec  float64
-	ActionsPerSec float64
+	RatePerSec float64
 	DBSizeMB      int64
 	PendingSlices int
 	Mode          string
@@ -279,6 +279,9 @@ func (s *Syncer) SyncActions(processor Processor, startBlock uint32) error {
 				return fmt.Errorf("bulk sync: %w", err)
 			}
 			s.currentBlock = endBlock + 1
+			if s.reader != nil {
+				s.reader.SetCurrentBlock(s.currentBlock)
+			}
 			continue
 		}
 
@@ -454,6 +457,7 @@ func (s *Syncer) bulkSyncParallel(sr *SliceReader, endBlock uint32, processor Ba
 
 	pending := make(map[uint32]*actionSliceWork)
 	nextSlice := startSlice
+	var sliceErr error
 
 	lastLogTime := time.Now()
 	lastLogBlock := s.currentBlock
@@ -484,8 +488,13 @@ func (s *Syncer) bulkSyncParallel(sr *SliceReader, endBlock uint32, processor Ba
 		}
 
 		if work.err != nil {
-			logger.Printf("sync", "bulkSyncParallel: error at slice %d: %v", work.sliceNum, work.err)
-			continue
+			logger.Printf("error", "bulkSyncParallel: slice %d failed (blocks %d-%d): %v",
+				work.sliceNum, work.sliceStart, work.sliceEnd, work.err)
+			sliceErr = fmt.Errorf("slice %d (blocks %d-%d): %w", work.sliceNum, work.sliceStart, work.sliceEnd, work.err)
+			exit = true
+			for range resultChan {
+			}
+			break
 		}
 
 		pending[work.sliceNum] = work
@@ -550,6 +559,10 @@ func (s *Syncer) bulkSyncParallel(sr *SliceReader, endBlock uint32, processor Ba
 		}
 	}
 
+	if sliceErr != nil {
+		return s.currentBlock - 1, sliceErr
+	}
+
 	if err := processor.Flush(); err != nil {
 		return s.currentBlock - 1, fmt.Errorf("flushing: %w", err)
 	}
@@ -572,7 +585,7 @@ func (s *Syncer) extractActionSlice(sr *SliceReader, startBlock, endBlock uint32
 	}
 
 	extractStart := time.Now()
-	blocks, err := FilterBlocksParallel(batch, startBlock, endBlock, s.config.ActionFilter, filterWorkers)
+	blocks, err := FilterBlocksParallel(batch, startBlock, endBlock, s.config.ActionFilter, filterWorkers, s.config.RetainActionData)
 	if err != nil {
 		return nil, fmt.Errorf("filter blocks %d-%d: %w", startBlock, endBlock, err)
 	}
@@ -614,7 +627,7 @@ func (s *Syncer) logProgress(lastLogTime *time.Time, lastLogBlock *uint32, endBl
 	currentBlock := s.currentBlock - 1
 	blocksDelta := currentBlock - *lastLogBlock
 	bps := float64(blocksDelta) / elapsed
-	aps := float64(actionCount) / elapsed
+	trcs := float64(actionCount) / elapsed
 	pctComplete := float64(currentBlock) / float64(endBlock) * 100.0
 
 	var dbSizeMB int64
@@ -627,15 +640,15 @@ func (s *Syncer) logProgress(lastLogTime *time.Time, lastLogBlock *uint32, endBl
 			CurrentBlock:  currentBlock,
 			EndBlock:      endBlock,
 			BlocksPerSec:  bps,
-			ActionsPerSec: aps,
+			RatePerSec: trcs,
 			DBSizeMB:      dbSizeMB,
 			PendingSlices: pendingSlices,
 			Mode:          "BULK",
 		})
 	}
 
-	logger.Printf("sync", "Block: %10d / %10d (%.1f%%) | %s aps | %s bps | DB: %d MB",
-		currentBlock, endBlock, pctComplete, logger.FormatNumber(aps), logger.FormatNumber(bps), dbSizeMB)
+	logger.Printf("sync", "Block: %10d / %10d (%.1f%%) | %s trc/s | %s bps | DB: %d MB",
+		currentBlock, endBlock, pctComplete, logger.FormatNumber(trcs), logger.FormatNumber(bps), dbSizeMB)
 
 	*lastLogTime = now
 	*lastLogBlock = currentBlock
@@ -661,7 +674,7 @@ func (s *Syncer) logLiveProgress(lastLogTime *time.Time, lastLogBlock *uint32, a
 
 	blocksDelta := currentBlock - *lastLogBlock
 	bps := float64(blocksDelta) / elapsed
-	aps := float64(*actionCount) / elapsed
+	trcs := float64(*actionCount) / elapsed
 	ips := float64(*notifCount) / elapsed
 
 	if s.progressCb != nil {
@@ -669,7 +682,7 @@ func (s *Syncer) logLiveProgress(lastLogTime *time.Time, lastLogBlock *uint32, a
 			CurrentBlock:  currentBlock,
 			EndBlock:      lib,
 			BlocksPerSec:  bps,
-			ActionsPerSec: aps,
+			RatePerSec: trcs,
 			DBSizeMB:      dbSizeMB,
 			PendingSlices: 0,
 			Mode:          "LIVE",
@@ -677,11 +690,11 @@ func (s *Syncer) logLiveProgress(lastLogTime *time.Time, lastLogBlock *uint32, a
 	}
 
 	if s.config.LogInterval == 0 {
-		logger.Printf("sync", "Block: %10d / %10d | %d idx | %d actions | DB: %d MB",
+		logger.Printf("sync", "Block: %10d / %10d | %d idx | %d traces | DB: %d MB",
 			currentBlock, lib, *notifCount, *actionCount, dbSizeMB)
 	} else {
-		logger.Printf("sync", "Block: %10d / %10d | %s idx/s | %s aps | %s bps | DB: %d MB",
-			currentBlock, lib, logger.FormatNumber(ips), logger.FormatNumber(aps), logger.FormatNumber(bps), dbSizeMB)
+		logger.Printf("sync", "Block: %10d / %10d | %s idx/s | %s trc/s | %s bps | DB: %d MB",
+			currentBlock, lib, logger.FormatNumber(ips), logger.FormatNumber(trcs), logger.FormatNumber(bps), dbSizeMB)
 	}
 
 	*lastLogTime = now
@@ -762,6 +775,9 @@ func (s *Syncer) SyncTransactionIDs(processor TransactionProcessor, startBlock u
 				return fmt.Errorf("bulk sync: %w", err)
 			}
 			s.currentBlock = endBlock + 1
+			if s.reader != nil {
+				s.reader.SetCurrentBlock(s.currentBlock)
+			}
 			continue
 		}
 
@@ -892,6 +908,7 @@ func (s *Syncer) bulkSyncTransactions(sr *SliceReader, endBlock uint32, processo
 
 	pending := make(map[uint32]*trxSliceWork)
 	nextSlice := startSlice
+	var sliceErr error
 
 	lastLogTime := time.Now()
 	lastLogBlock := s.currentBlock
@@ -922,8 +939,13 @@ func (s *Syncer) bulkSyncTransactions(sr *SliceReader, endBlock uint32, processo
 		}
 
 		if work.err != nil {
-			logger.Printf("sync", "bulkSyncTransactions: error at slice %d: %v", work.sliceNum, work.err)
-			continue
+			logger.Printf("error", "bulkSyncTransactions: slice %d failed (blocks %d-%d): %v",
+				work.sliceNum, work.sliceStart, work.sliceEnd, work.err)
+			sliceErr = fmt.Errorf("slice %d (blocks %d-%d): %w", work.sliceNum, work.sliceStart, work.sliceEnd, work.err)
+			exit = true
+			for range resultChan {
+			}
+			break
 		}
 
 		pending[work.sliceNum] = work
@@ -986,6 +1008,10 @@ func (s *Syncer) bulkSyncTransactions(sr *SliceReader, endBlock uint32, processo
 				trxCount = 0
 			}
 		}
+	}
+
+	if sliceErr != nil {
+		return s.currentBlock - 1, sliceErr
 	}
 
 	if err := processor.Flush(); err != nil {
@@ -1054,7 +1080,7 @@ func (s *Syncer) logTransactionProgress(lastLogTime *time.Time, lastLogBlock *ui
 			CurrentBlock:  currentBlock,
 			EndBlock:      endBlock,
 			BlocksPerSec:  bps,
-			ActionsPerSec: tps,
+			RatePerSec: tps,
 			DBSizeMB:      dbSizeMB,
 			PendingSlices: pendingSlices,
 			Mode:          "BULK",
@@ -1095,7 +1121,7 @@ func (s *Syncer) logLiveTransactionProgress(lastLogTime *time.Time, lastLogBlock
 			CurrentBlock:  currentBlock,
 			EndBlock:      lib,
 			BlocksPerSec:  bps,
-			ActionsPerSec: tps,
+			RatePerSec: tps,
 			DBSizeMB:      dbSizeMB,
 			PendingSlices: 0,
 			Mode:          "LIVE",

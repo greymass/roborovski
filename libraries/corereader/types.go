@@ -38,6 +38,7 @@ type RawBlock struct {
 	rawData     []byte
 	dataOffsets []uint32
 	dataLengths []uint32
+	trxIDs      [][32]byte
 }
 
 func (r *RawBlock) GetActionData(dataIndex uint32) []byte {
@@ -104,6 +105,19 @@ func (b *Block) HasActionData() bool {
 
 func (b *Block) SetRawBlock(raw *RawBlock) {
 	b.rawBlock = raw
+}
+
+func (b *Block) GetTransactionID(trxIndex uint32) [32]byte {
+	if b.rawBlock == nil || b.rawBlock.rawData == nil {
+		return [32]byte{}
+	}
+	if b.rawBlock.trxIDs == nil {
+		b.rawBlock.trxIDs = ExtractTransactionIDsRaw(b.rawBlock.rawData)
+	}
+	if int(trxIndex) >= len(b.rawBlock.trxIDs) {
+		return [32]byte{}
+	}
+	return b.rawBlock.trxIDs[trxIndex]
 }
 
 // Processor handles single-block processing during sync.

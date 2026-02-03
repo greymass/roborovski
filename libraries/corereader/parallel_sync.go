@@ -7,7 +7,8 @@ import (
 
 // FilterBlocksParallel filters multiple raw blocks in parallel.
 // Returns results in block order (sorted by BlockNum).
-func FilterBlocksParallel(batch *SliceBatch, startBlock, endBlock uint32, filterFunc ActionFilterFunc, workers int) ([]Block, error) {
+func FilterBlocksParallel(batch *SliceBatch, startBlock, endBlock uint32, filterFunc ActionFilterFunc, workers int, retainActionData ...bool) ([]Block, error) {
+	retainData := len(retainActionData) > 0 && retainActionData[0]
 	if workers <= 0 {
 		workers = runtime.NumCPU()
 	}
@@ -46,7 +47,12 @@ func FilterBlocksParallel(batch *SliceBatch, startBlock, endBlock uint32, filter
 			for work := range workChan {
 				blockData := blockDataSlice[work.idx]
 
-				notif := parseRawBlock(blockData, work.blockNum, filterFunc)
+				var notif RawBlock
+				if retainData {
+					notif = parseRawBlockWithData(blockData, work.blockNum, filterFunc)
+				} else {
+					notif = parseRawBlock(blockData, work.blockNum, filterFunc)
+				}
 
 				filtered, newActionsBuf, newExecBuf := FilterRawBlockInto(
 					notif, filterFunc, actionsBuf, execBuf,
@@ -60,7 +66,7 @@ func FilterBlocksParallel(batch *SliceBatch, startBlock, endBlock uint32, filter
 				execCopy := make([]ContractExecution, len(filtered.Executions))
 				copy(execCopy, filtered.Executions)
 
-				results[work.idx] = Block{
+				result := Block{
 					BlockNum:   work.blockNum,
 					BlockTime:  notif.BlockTime,
 					Actions:    actionsCopy,
@@ -68,6 +74,10 @@ func FilterBlocksParallel(batch *SliceBatch, startBlock, endBlock uint32, filter
 					MinSeq:     filtered.MinSeq,
 					MaxSeq:     filtered.MaxSeq,
 				}
+				if retainData {
+					result.SetRawBlock(&notif)
+				}
+				results[work.idx] = result
 			}
 		}()
 	}

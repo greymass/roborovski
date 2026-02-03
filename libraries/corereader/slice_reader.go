@@ -3728,6 +3728,30 @@ func parseRawBlock(blockData []byte, blockNum uint32, filterFunc ActionFilterFun
 	}
 }
 
+func parseRawBlockWithData(blockData []byte, blockNum uint32, filterFunc ActionFilterFunc) RawBlock {
+	blob := bytesToSyncBlockBlob(blockData)
+
+	dataOffsets := make([]uint32, len(blob.dataOffsets))
+	copy(dataOffsets, blob.dataOffsets)
+	dataLengths := make([]uint32, len(blob.dataLengths))
+	copy(dataLengths, blob.dataLengths)
+
+	releaseSyncBlockBlob(blob)
+
+	notifs, actionMeta, actions, namesInBlock, _, _, blockTime, _ := parseBlockWithCanonical(blockData, filterFunc)
+	return RawBlock{
+		BlockNum:      blockNum,
+		BlockTime:     blockTime,
+		Notifications: notifs,
+		ActionMeta:    actionMeta,
+		Actions:       actions,
+		NamesInBlock:  namesInBlock,
+		rawData:       blockData,
+		dataOffsets:   dataOffsets,
+		dataLengths:   dataLengths,
+	}
+}
+
 func (sr *SliceReader) GetStateProps(bypassCache bool) (uint32, uint32, error) {
 	sliceCount := sr.sharedMetadata.getSliceCount()
 
@@ -3752,7 +3776,7 @@ func (sr *SliceReader) GetStateProps(bypassCache bool) (uint32, uint32, error) {
 			blockIndexPath := filepath.Join(nextSlicePath, "blocks.index")
 			endBlock, globMin, globMax, err := findLastBlockInIndex(blockIndexPath)
 			if err != nil {
-				logger.Printf("warning", "New slice %d exists but can't read blocks.index: %v", nextSliceNum, err)
+				logger.Printf("debug", "New slice %d exists but can't read blocks.index: %v", nextSliceNum, err)
 				break
 			}
 
