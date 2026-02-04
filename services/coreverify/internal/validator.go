@@ -79,7 +79,6 @@ type Validator struct {
 	fullValidation bool
 	checkOnblock   bool
 	maxBlocks      int
-	repair         bool
 	debug          bool
 	outputJSON     bool
 
@@ -91,7 +90,7 @@ type Validator struct {
 }
 
 // NewValidator creates a new validator
-func NewValidator(basePath string, workers, batchSize int, fullValidation, checkOnblock bool, maxBlocks int, repair, debug, outputJSON bool) *Validator {
+func NewValidator(basePath string, workers, batchSize int, fullValidation, checkOnblock bool, maxBlocks int, debug, outputJSON bool) *Validator {
 	if workers <= 0 {
 		workers = 4
 	}
@@ -105,7 +104,6 @@ func NewValidator(basePath string, workers, batchSize int, fullValidation, check
 		fullValidation: fullValidation,
 		checkOnblock:   checkOnblock,
 		maxBlocks:      maxBlocks,
-		repair:         repair,
 		debug:          debug,
 		outputJSON:     outputJSON,
 		issues:         make([]ValidationIssue, 0),

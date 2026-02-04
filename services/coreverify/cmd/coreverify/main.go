@@ -39,7 +39,6 @@ func main() {
 	full := flag.Bool("full", false, "Enable full data validation (decompress + parse blocks)")
 	checkOnblock := flag.Bool("check-onblock", false, "Check each block contains an eosio::onblock action")
 	maxBlocks := flag.Int("max-blocks", 0, "Maximum number of blocks to verify (0 = all)")
-	repair := flag.Bool("repair", false, "Repair mode: rebuild corrupt indices (DANGEROUS)")
 	outputJSON := flag.Bool("output-json", false, "Output JSON report instead of human-readable")
 	debug := flag.Bool("debug", false, "Enable debug logging")
 	flag.Parse()
@@ -71,7 +70,7 @@ func main() {
 	}
 
 	// Create validator
-	validator := internal.NewValidator(*dataPath, *workers, *batchSize, *full, *checkOnblock, *maxBlocks, *repair, *debug, *outputJSON)
+	validator := internal.NewValidator(*dataPath, *workers, *batchSize, *full, *checkOnblock, *maxBlocks, *debug, *outputJSON)
 
 	// Run validation
 	report, err := validator.ValidateStorage()
