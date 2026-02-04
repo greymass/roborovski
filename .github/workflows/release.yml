@@ -1,0 +1,48 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify tag is on master
+        run: |
+          git fetch origin master
+          if ! git merge-base --is-ancestor ${{ github.sha }} origin/master; then
+            echo "Error: tagged commit is not on origin/master"
+            exit 1
+          fi
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.work
+
+      - run: make test
+      - run: make release-build VERSION=${{ github.ref_name }}
+
+      - name: Generate checksums
+        run: cd bin && sha256sum * > checksums-sha256.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            bin/actionindex
+            bin/apiproxy
+            bin/coreindex
+            bin/coreverify
+            bin/txindex
+            bin/checksums-sha256.txt
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}

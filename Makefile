@@ -24,7 +24,7 @@ help: ## Show this help message
 	@echo "  $(SERVICES)" | fold -s -w 70 | sed 's/^/  /'
 	@echo ""
 	@echo "Release:"
-	@grep -E '^(tag-list|tag|tag-push|release):.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-25s %s\n", $$1, $$2}'
+	@grep -E '^(tag-list|tag|tag-push|release|release-build):.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-25s %s\n", $$1, $$2}'
 	@echo ""
 	@echo "Other:"
 	@grep -E '^(uninstall|list):.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-25s %s\n", $$1, $$2}'
@@ -149,8 +149,8 @@ build/actionindex:
 .PHONY: build/coreverify
 build/coreverify:
 	@if [ "$(call needs_rebuild,coreverify,services/coreverify)" = "1" ]; then \
-		echo "==> Building coreverify"; \
-		go build -ldflags "-X main.Version=$(VERSION)" -o $(BINDIR)/coreverify ./services/coreverify/cmd/coreverify; \
+		echo "==> Building coreverify (CGO_ENABLED=0)"; \
+		CGO_ENABLED=0 go build -ldflags "-X main.Version=$(VERSION)" -o $(BINDIR)/coreverify ./services/coreverify/cmd/coreverify; \
 	else \
 		echo "==> coreverify is up to date"; \
 	fi
@@ -158,8 +158,8 @@ build/coreverify:
 .PHONY: build/apiproxy
 build/apiproxy:
 	@if [ "$(call needs_rebuild,apiproxy,services/apiproxy)" = "1" ]; then \
-		echo "==> Building apiproxy"; \
-		go build -ldflags "-X main.Version=$(VERSION)" -o $(BINDIR)/apiproxy ./services/apiproxy/cmd/apiproxy; \
+		echo "==> Building apiproxy (CGO_ENABLED=0)"; \
+		CGO_ENABLED=0 go build -ldflags "-X main.Version=$(VERSION)" -o $(BINDIR)/apiproxy ./services/apiproxy/cmd/apiproxy; \
 	else \
 		echo "==> apiproxy is up to date"; \
 	fi
@@ -167,8 +167,8 @@ build/apiproxy:
 .PHONY: build/coreindex
 build/coreindex:
 	@if [ "$(call needs_rebuild,coreindex,services/coreindex)" = "1" ]; then \
-		echo "==> Building coreindex"; \
-		go build -ldflags "-X main.Version=$(VERSION)" -o $(BINDIR)/coreindex ./services/coreindex/cmd/coreindex; \
+		echo "==> Building coreindex (CGO_ENABLED=0)"; \
+		CGO_ENABLED=0 go build -ldflags "-X main.Version=$(VERSION)" -o $(BINDIR)/coreindex ./services/coreindex/cmd/coreindex; \
 	else \
 		echo "==> coreindex is up to date"; \
 	fi
@@ -176,8 +176,8 @@ build/coreindex:
 .PHONY: build/txindex
 build/txindex:
 	@if [ "$(call needs_rebuild,txindex,services/txindex)" = "1" ]; then \
-		echo "==> Building txindex"; \
-		go build -ldflags "-X main.Version=$(VERSION)" -o $(BINDIR)/txindex ./services/txindex/cmd/txindex; \
+		echo "==> Building txindex (CGO_ENABLED=0)"; \
+		CGO_ENABLED=0 go build -ldflags "-X main.Version=$(VERSION)" -o $(BINDIR)/txindex ./services/txindex/cmd/txindex; \
 	else \
 		echo "==> txindex is up to date"; \
 	fi
@@ -193,23 +193,23 @@ install/actionindex:
 
 .PHONY: install/coreverify
 install/coreverify:
-	@echo "==> Installing coreverify"
-	@go install ./services/coreverify/cmd/coreverify
+	@echo "==> Installing coreverify (CGO_ENABLED=0)"
+	@CGO_ENABLED=0 go install ./services/coreverify/cmd/coreverify
 
 .PHONY: install/apiproxy
 install/apiproxy:
-	@echo "==> Installing apiproxy"
-	@go install ./services/apiproxy/cmd/apiproxy
+	@echo "==> Installing apiproxy (CGO_ENABLED=0)"
+	@CGO_ENABLED=0 go install ./services/apiproxy/cmd/apiproxy
 
 .PHONY: install/coreindex
 install/coreindex:
-	@echo "==> Installing coreindex"
-	@go install ./services/coreindex/cmd/coreindex
+	@echo "==> Installing coreindex (CGO_ENABLED=0)"
+	@CGO_ENABLED=0 go install ./services/coreindex/cmd/coreindex
 
 .PHONY: install/txindex
 install/txindex:
-	@echo "==> Installing txindex"
-	@go install ./services/txindex/cmd/txindex
+	@echo "==> Installing txindex (CGO_ENABLED=0)"
+	@CGO_ENABLED=0 go install ./services/txindex/cmd/txindex
 
 # =============================================================================
 # Release Targets
@@ -278,6 +278,21 @@ tag-delete: ## Delete all tags for VERSION (local only, requires VERSION=vX.Y.Z)
 	done
 	@echo ""
 	@echo "✅ Local tags deleted. Remote tags must be deleted manually if needed."
+
+.PHONY: release-build
+release-build: clean ## Build static linux/amd64 binaries for release (requires VERSION=vX.Y.Z)
+	@if [ "$(VERSION)" = "dev" ] || [ -z "$(VERSION)" ]; then \
+		echo "Error: VERSION is required. Usage: make release-build VERSION=v1.0.0"; \
+		exit 1; \
+	fi
+	@for svc in $(SERVICES); do \
+		echo "==> Building $$svc (linux/amd64, static)"; \
+		CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+			-ldflags "-X main.Version=$(VERSION)" \
+			-o $(BINDIR)/$$svc ./services/$$svc/cmd/$$svc || exit 1; \
+	done
+	@echo ""
+	@echo "✅ Release binaries built to ./$(BINDIR)/"
 
 .PHONY: release
 release: verify ## Full release: verify + tag + push (requires VERSION=vX.Y.Z)
