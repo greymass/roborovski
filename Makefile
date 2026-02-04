@@ -2,7 +2,7 @@
 
 # Configuration
 BINDIR := bin
-SERVICES := actionindex coreverify apiproxy streamproxy coreindex txindex
+SERVICES := actionindex coreverify apiproxy coreindex txindex
 NPROC := $(shell nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 
@@ -164,15 +164,6 @@ build/apiproxy:
 		echo "==> apiproxy is up to date"; \
 	fi
 
-.PHONY: build/streamproxy
-build/streamproxy:
-	@if [ "$(call needs_rebuild,streamproxy,services/streamproxy)" = "1" ]; then \
-		echo "==> Building streamproxy"; \
-		go build -ldflags "-X main.Version=$(VERSION)" -o $(BINDIR)/streamproxy ./services/streamproxy/cmd/streamproxy; \
-	else \
-		echo "==> streamproxy is up to date"; \
-	fi
-
 .PHONY: build/coreindex
 build/coreindex:
 	@if [ "$(call needs_rebuild,coreindex,services/coreindex)" = "1" ]; then \
@@ -209,11 +200,6 @@ install/coreverify:
 install/apiproxy:
 	@echo "==> Installing apiproxy"
 	@go install ./services/apiproxy/cmd/apiproxy
-
-.PHONY: install/streamproxy
-install/streamproxy:
-	@echo "==> Installing streamproxy"
-	@go install ./services/streamproxy/cmd/streamproxy
 
 .PHONY: install/coreindex
 install/coreindex:
