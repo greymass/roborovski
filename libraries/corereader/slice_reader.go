@@ -1460,24 +1460,25 @@ func (sr *SliceReader) findSliceForGlobTracked(glob uint64) (*SliceInfo, bool, e
 
 	sr.sliceDiscoveryMu.Lock()
 
-	sliceInfo, _ = sr.sharedMetadata.findSliceForGlob(glob)
-	if sliceInfo != nil {
-		sr.sliceDiscoveryMu.Unlock()
-		return sliceInfo, false, nil
-	}
-
-	if sr.sliceDiscovering == nil {
-		sr.sliceDiscovering = make(map[uint32]chan struct{})
-	}
-
 	globKey := uint32(glob >> 32)
-	if waitCh, discovering := sr.sliceDiscovering[globKey]; discovering {
-		sr.sliceDiscoveryMu.Unlock()
-		<-waitCh
+	for {
 		sliceInfo, _ = sr.sharedMetadata.findSliceForGlob(glob)
 		if sliceInfo != nil {
+			sr.sliceDiscoveryMu.Unlock()
 			return sliceInfo, false, nil
 		}
+
+		if sr.sliceDiscovering == nil {
+			sr.sliceDiscovering = make(map[uint32]chan struct{})
+		}
+
+		waitCh, discovering := sr.sliceDiscovering[globKey]
+		if !discovering {
+			break
+		}
+		sr.sliceDiscoveryMu.Unlock()
+		<-waitCh
+		sr.sliceDiscoveryMu.Lock()
 	}
 
 	doneCh := make(chan struct{})
