@@ -465,28 +465,6 @@ paths:
               schema:
                 $ref: "#/components/schemas/DebugReadChunkResponse"
 
-  /debug/compare:
-    get:
-      operationId: debugCompare
-      summary: Compare index stats
-      description: Compare index statistics between implementations for an account.
-      tags:
-        - Debug
-      parameters:
-        - name: account
-          in: query
-          required: true
-          schema:
-            type: string
-          description: Account name
-      responses:
-        "200":
-          description: Comparison stats
-          content:
-            application/json:
-              schema:
-                type: object
-
   /debug/scan-contract-action:
     get:
       operationId: debugScanContractAction

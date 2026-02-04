@@ -10,13 +10,12 @@ import (
 )
 
 type DebugAccountInfo struct {
-	Account          string   `json:"account"`
-	AccountID        uint64   `json:"account_id"`
-	AllActionsChunks int      `json:"all_actions_chunks"`
-	ChunkBases       []uint64 `json:"chunk_bases,omitempty"`
-	FirstBase        uint64   `json:"first_base"`
-	LastBase         uint64   `json:"last_base"`
-	WALEntries       int      `json:"wal_entries"`
+	Account    string   `json:"account"`
+	AccountID  uint64   `json:"account_id"`
+	ChunkBases []uint64 `json:"chunk_bases,omitempty"`
+	FirstBase  uint64   `json:"first_base"`
+	LastBase   uint64   `json:"last_base"`
+	WALEntries int      `json:"wal_entries"`
 }
 
 type DebugTimeMapInfo struct {
@@ -58,34 +57,44 @@ func HandleDebugAccount(indexes *Indexes, w http.ResponseWriter, r *http.Request
 	}
 	defer iter.Close()
 
-	var chunkCount int
 	var firstBase, lastBase uint64
-	var bases []uint64
 
-	for iter.First(); iter.Valid(); iter.Next() {
+	if iter.First() {
 		_, baseSeq, ok := parseAccountActionsKey(iter.Key())
-		if !ok {
-			continue
-		}
-		if chunkCount == 0 {
+		if ok {
 			firstBase = baseSeq
 		}
-		lastBase = baseSeq
-		chunkCount++
-		if showBases {
+	}
+	if iter.Last() {
+		_, baseSeq, ok := parseAccountActionsKey(iter.Key())
+		if ok {
+			lastBase = baseSeq
+		}
+	}
+
+	var bases []uint64
+	if showBases {
+		ctx := r.Context()
+		for iter.First(); iter.Valid(); iter.Next() {
+			_, baseSeq, ok := parseAccountActionsKey(iter.Key())
+			if !ok {
+				continue
+			}
 			bases = append(bases, baseSeq)
+			if len(bases)%10000 == 0 && ctx.Err() != nil {
+				break
+			}
 		}
 	}
 
 	walSeqs := indexes.walIndex.GetEntriesForAccount(accountID)
 
 	info := DebugAccountInfo{
-		Account:          account,
-		AccountID:        accountID,
-		AllActionsChunks: chunkCount,
-		FirstBase:        firstBase,
-		LastBase:         lastBase,
-		WALEntries:       len(walSeqs),
+		Account:   account,
+		AccountID: accountID,
+		FirstBase: firstBase,
+		LastBase:  lastBase,
+		WALEntries: len(walSeqs),
 	}
 
 	if showBases {
@@ -251,55 +260,6 @@ func HandleDebugSeqToDate(indexes *Indexes, w http.ResponseWriter, r *http.Reque
 	writeJSON(w, result)
 }
 
-func HandleDebugCompareIndexes(indexes *Indexes, w http.ResponseWriter, r *http.Request) {
-	account := r.URL.Query().Get("account")
-	_ = r.URL.Query().Get("contract")
-	_ = r.URL.Query().Get("action")
-
-	if account == "" {
-		http.Error(w, "account parameter required", http.StatusBadRequest)
-		return
-	}
-
-	accountID := chain.StringToName(account)
-
-	prefix := makeAccountActionsPrefix(accountID)
-	upperBound := incrementPrefix(prefix)
-	iter, iterErr := indexes.db.NewIter(&pebble.IterOptions{
-		LowerBound: prefix,
-		UpperBound: upperBound,
-	})
-
-	var chunkCount int
-	var minBase, maxBase uint64
-	if iterErr == nil {
-		for iter.First(); iter.Valid(); iter.Next() {
-			_, baseSeq, ok := parseAccountActionsKey(iter.Key())
-			if !ok {
-				continue
-			}
-			if chunkCount == 0 {
-				minBase = baseSeq
-			}
-			maxBase = baseSeq
-			chunkCount++
-		}
-		iter.Close()
-	}
-
-	result := map[string]interface{}{
-		"account":    account,
-		"account_id": accountID,
-		"all_actions": map[string]interface{}{
-			"chunk_count": chunkCount,
-			"min_base":    minBase,
-			"max_base":    maxBase,
-		},
-	}
-
-	writeJSON(w, result)
-}
-
 func HandleDebugReadChunk(indexes *Indexes, w http.ResponseWriter, r *http.Request) {
 	account := r.URL.Query().Get("account")
 	baseSeqStr := r.URL.Query().Get("base_seq")
@@ -412,9 +372,11 @@ func HandleDebugScanContractAction(indexes *Indexes, w http.ResponseWriter, r *h
 	}
 	defer iter.Close()
 
+	ctx := r.Context()
 	var chunkCount int
 	var minBase, maxBase uint64
 	var lastChunkSeqs []uint64
+	var scanErr string
 
 	for iter.First(); iter.Valid(); iter.Next() {
 		_, _, _, baseSeq, ok := parseContractActionKey(iter.Key())
@@ -437,6 +399,12 @@ func HandleDebugScanContractAction(indexes *Indexes, w http.ResponseWriter, r *h
 				lastChunkSeqs = chunk.Seqs[len(chunk.Seqs)-10:]
 			}
 		}
+		if chunkCount%1000 == 0 {
+			if ctx.Err() != nil {
+				scanErr = "context cancelled during scan"
+				break
+			}
+		}
 	}
 
 	result := map[string]interface{}{
@@ -447,6 +415,9 @@ func HandleDebugScanContractAction(indexes *Indexes, w http.ResponseWriter, r *h
 		"db_min_base":     minBase,
 		"db_max_base":     maxBase,
 		"last_chunk_seqs": lastChunkSeqs,
+	}
+	if scanErr != "" {
+		result["error"] = scanErr
 	}
 
 	if maxBase > 0 {

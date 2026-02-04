@@ -35,7 +35,6 @@ var debugRoutes = map[string][]string{
 	"/debug/account":                 {"GET"},
 	"/debug/chunk":                   {"GET"},
 	"/debug/read-chunk":              {"GET"},
-	"/debug/compare":                 {"GET"},
 	"/debug/scan-contract-action":    {"GET"},
 	"/debug/timemap":                 {"GET"},
 	"/debug/seq":                     {"GET"},

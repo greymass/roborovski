@@ -523,12 +523,6 @@ func handleDebugEndpoint(indexes internal.ActionIndexer, reader corereader.Reade
 		} else {
 			http.Error(w, "debug endpoints not available", http.StatusNotImplemented)
 		}
-	case "/debug/compare":
-		if idx, ok := indexes.(*internal.Indexes); ok {
-			internal.HandleDebugCompareIndexes(idx, w, r)
-		} else {
-			http.Error(w, "debug endpoints not available", http.StatusNotImplemented)
-		}
 	case "/debug/read-chunk":
 		if idx, ok := indexes.(*internal.Indexes); ok {
 			internal.HandleDebugReadChunk(idx, w, r)
