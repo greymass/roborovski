@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/DataDog/zstd"
+	"github.com/klauspost/compress/zstd"
 	"github.com/greymass/roborovski/libraries/logger"
 )
 
@@ -350,7 +350,11 @@ func (d *SliceDownloader) extractVerifyAndRebuild(archivePath string, sliceNum u
 	}
 	defer file.Close()
 
-	zr := zstd.NewReader(file)
+	zr, err := zstd.NewReader(file)
+	if err != nil {
+		os.RemoveAll(sliceDir)
+		return nil, fmt.Errorf("failed to create zstd reader: %w", err)
+	}
 	defer zr.Close()
 
 	tr := tar.NewReader(zr)
@@ -571,7 +575,10 @@ func (d *SliceDownloader) extractMegaSlice(archivePath string, megaNum uint32) e
 	}
 	defer file.Close()
 
-	zr := zstd.NewReader(file)
+	zr, err := zstd.NewReader(file)
+	if err != nil {
+		return fmt.Errorf("failed to create zstd reader: %w", err)
+	}
 	defer zr.Close()
 
 	tr := tar.NewReader(zr)
