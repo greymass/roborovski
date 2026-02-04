@@ -26,7 +26,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version-file: .go-version
+          go-version-file: go.work
 
       - run: make test
       - run: make release-build VERSION=${{ github.ref_name }}
