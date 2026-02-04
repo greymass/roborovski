@@ -95,6 +95,15 @@ func (sm *SharedSliceMetadata) updateSlice(idx int, slice SliceInfo) {
 	}
 }
 
+func (sm *SharedSliceMetadata) updateSliceGlobRange(idx int, globMin, globMax uint64) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	if idx >= 0 && idx < len(sm.slices) {
+		sm.slices[idx].GlobMin = globMin
+		sm.slices[idx].GlobMax = globMax
+	}
+}
+
 func (sm *SharedSliceMetadata) addSlice(slice SliceInfo) bool {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -140,15 +149,6 @@ func (sm *SharedSliceMetadata) markSliceFinalized(idx int) {
 	}
 }
 
-func (sm *SharedSliceMetadata) updateLastSliceGlobRange(globMin, globMax uint64) {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-	if len(sm.slices) > 0 {
-		lastIdx := len(sm.slices) - 1
-		sm.slices[lastIdx].GlobMin = globMin
-		sm.slices[lastIdx].GlobMax = globMax
-	}
-}
 
 // findSliceForGlob finds the slice containing the given global sequence using binary search.
 // Returns the slice info and index, or nil/-1 if not found.
@@ -1575,7 +1575,7 @@ func (sr *SliceReader) findSliceForGlobFromDisk(glob uint64, startSliceNum uint3
 				if err == nil && freshGlobMax > cachedMax {
 					logger.Printf("debug", "Refreshed slice %d glob range: %d-%d → %d-%d",
 						slice.SliceNum, cachedMin, cachedMax, freshGlobMin, freshGlobMax)
-					sr.sharedMetadata.updateLastSliceGlobRange(freshGlobMin, freshGlobMax)
+					sr.sharedMetadata.updateSliceGlobRange(i, freshGlobMin, freshGlobMax)
 					cachedMin, cachedMax = freshGlobMin, freshGlobMax
 				}
 			}
@@ -1642,7 +1642,7 @@ func (sr *SliceReader) findSliceForGlobLegacy(glob uint64) (*SliceInfo, error) {
 					slice.SliceNum, globMin, globMax, glob)
 			}
 
-			if glob > globMax && mid == len(slicesCopy)-1 {
+			if glob > globMax {
 				slicePath := filepath.Join(sr.basePath, fmt.Sprintf("history_%010d-%010d", slice.StartBlock, slice.MaxBlock))
 				blockIndexPath := filepath.Join(slicePath, "blocks.index")
 				_, freshGlobMin, freshGlobMax, err := findLastBlockInIndex(blockIndexPath)
@@ -1652,7 +1652,7 @@ func (sr *SliceReader) findSliceForGlobLegacy(glob uint64) (*SliceInfo, error) {
 					globMin = freshGlobMin
 					globMax = freshGlobMax
 
-					sr.sharedMetadata.updateLastSliceGlobRange(freshGlobMin, freshGlobMax)
+					sr.sharedMetadata.updateSliceGlobRange(mid, freshGlobMin, freshGlobMax)
 				}
 			}
 
@@ -3805,23 +3805,24 @@ func (sr *SliceReader) GetStateProps(bypassCache bool) (uint32, uint32, error) {
 				prevIdx := currentCount - 1
 				prevSlice := sr.sharedMetadata.getSlice(prevIdx)
 
-				// Refresh previous slice's glob range before finalizing
-				prevSlicePath := filepath.Join(sr.basePath, fmt.Sprintf("history_%010d-%010d", prevSlice.StartBlock, prevSlice.MaxBlock))
-				prevBlockIndexPath := filepath.Join(prevSlicePath, "blocks.index")
-				if prevEndBlock, prevGlobMin, prevGlobMax, err := findLastBlockInIndex(prevBlockIndexPath); err == nil {
-					prevSlice.EndBlock = prevEndBlock
-					prevSlice.GlobMin = prevGlobMin
-					prevSlice.GlobMax = prevGlobMax
-					prevSlice.Finalized = true
-					sr.sharedMetadata.updateSlice(prevIdx, prevSlice)
-					logger.Printf("sync", "Finalized slice %d: EndBlock=%d, GlobRange=[%d-%d]",
-						prevSlice.SliceNum, prevEndBlock, prevGlobMin, prevGlobMax)
-				} else {
-					sr.sharedMetadata.markSliceFinalized(prevIdx)
-				}
+				if !prevSlice.Finalized || (prevSlice.GlobMin == 0 && prevSlice.GlobMax == 0) {
+					prevSlicePath := filepath.Join(sr.basePath, fmt.Sprintf("history_%010d-%010d", prevSlice.StartBlock, prevSlice.MaxBlock))
+					prevBlockIndexPath := filepath.Join(prevSlicePath, "blocks.index")
+					if prevEndBlock, prevGlobMin, prevGlobMax, err := findLastBlockInIndex(prevBlockIndexPath); err == nil {
+						prevSlice.EndBlock = prevEndBlock
+						prevSlice.GlobMin = prevGlobMin
+						prevSlice.GlobMax = prevGlobMax
+						prevSlice.Finalized = true
+						sr.sharedMetadata.updateSlice(prevIdx, prevSlice)
+						logger.Printf("sync", "Finalized slice %d: EndBlock=%d, GlobRange=[%d-%d]",
+							prevSlice.SliceNum, prevEndBlock, prevGlobMin, prevGlobMax)
+					} else {
+						sr.sharedMetadata.markSliceFinalized(prevIdx)
+					}
 
-				if sr.blockIndexCache != nil {
-					sr.blockIndexCache.FinalizeSlice(prevSlice.SliceNum)
+					if sr.blockIndexCache != nil {
+						sr.blockIndexCache.FinalizeSlice(prevSlice.SliceNum)
+					}
 				}
 			}
 			sr.sliceMapMu.Lock()
