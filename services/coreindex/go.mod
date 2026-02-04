@@ -3,8 +3,12 @@ module github.com/greymass/roborovski/services/coreindex
 go 1.25.3
 
 require (
-	github.com/DataDog/zstd v1.5.7
+	github.com/greymass/roborovski/libraries/abicache v0.0.0
+	github.com/greymass/roborovski/libraries/actionstream v0.0.0
 	github.com/greymass/roborovski/libraries/chain v0.0.0
+	github.com/greymass/roborovski/libraries/compression v0.0.0
+	github.com/greymass/roborovski/libraries/config v0.0.0
+	github.com/greymass/roborovski/libraries/corereader v0.0.0
 	github.com/greymass/roborovski/libraries/corestream v0.0.0
 	github.com/greymass/roborovski/libraries/encoding v0.0.0
 	github.com/greymass/roborovski/libraries/enforce v0.0.0
@@ -14,10 +18,12 @@ require (
 	github.com/greymass/roborovski/libraries/profiler v0.0.0
 	github.com/greymass/roborovski/libraries/server v0.0.0
 	github.com/greymass/roborovski/libraries/tracereader v0.0.0
+	github.com/klauspost/compress v1.18.1
 	github.com/prometheus/client_golang v1.22.0
 )
 
 require (
+	github.com/DataDog/zstd v1.5.7 // indirect
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/buger/jsonparser v1.1.1 // indirect
@@ -25,7 +31,6 @@ require (
 	github.com/google/pprof v0.0.0-20251213031049-b05bdaca462f // indirect
 	github.com/greymass/go-eosio v0.2.6 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
-	github.com/klauspost/compress v1.18.1 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
@@ -42,7 +47,12 @@ require (
 )
 
 replace (
+	github.com/greymass/roborovski/libraries/abicache => ../../libraries/abicache
+	github.com/greymass/roborovski/libraries/actionstream => ../../libraries/actionstream
 	github.com/greymass/roborovski/libraries/chain => ../../libraries/chain
+	github.com/greymass/roborovski/libraries/compression => ../../libraries/compression
+	github.com/greymass/roborovski/libraries/config => ../../libraries/config
+	github.com/greymass/roborovski/libraries/corereader => ../../libraries/corereader
 	github.com/greymass/roborovski/libraries/corestream => ../../libraries/corestream
 	github.com/greymass/roborovski/libraries/encoding => ../../libraries/encoding
 	github.com/greymass/roborovski/libraries/enforce => ../../libraries/enforce
