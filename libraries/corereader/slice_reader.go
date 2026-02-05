@@ -75,18 +75,6 @@ func (sm *SharedSliceMetadata) getSlices() []SliceInfo {
 	return result
 }
 
-func (sm *SharedSliceMetadata) appendSlice(slice SliceInfo) int {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-	idx := len(sm.slices)
-	sm.slices = append(sm.slices, slice)
-	if sm.sliceIndex == nil {
-		sm.sliceIndex = make(map[uint32]int)
-	}
-	sm.sliceIndex[slice.SliceNum] = idx
-	return idx
-}
-
 func (sm *SharedSliceMetadata) updateSlice(idx int, slice SliceInfo) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -1785,7 +1773,7 @@ func (sr *SliceReader) discoverSliceForGlob(glob uint64, knownSlices []SliceInfo
 				GlobMax:        globMax,
 			}
 
-			sr.sharedMetadata.appendSlice(newSlice)
+			sr.sharedMetadata.addSlice(newSlice)
 
 			return &newSlice, nil
 		}
