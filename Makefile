@@ -53,11 +53,7 @@ clean: ## Remove build artifacts
 .PHONY: test
 test: ## Run tests for all modules
 	@echo "Testing all workspace modules..."
-	@for mod in $$(awk '/use \(/{flag=1;next}/\)/{flag=0}flag' go.work | tr -d '\t'); do \
-		echo ""; \
-		echo "==> Testing $$mod"; \
-		(cd $$mod && go test ./...) || exit 1; \
-	done
+	@go test $$(awk '/use \(/{flag=1;next}/\)/{flag=0}flag' go.work | tr -d '\t' | sed 's|$$|/...|')
 	@echo ""
 	@echo "✅ All tests passed"
 
