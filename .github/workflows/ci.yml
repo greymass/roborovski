@@ -25,4 +25,4 @@ jobs:
           make tidy
           git diff --exit-code || (echo "go.mod/go.sum files are not tidy — run 'make tidy' locally" && exit 1)
 
-      - run: make test
+      - run: make test GOTEST_FLAGS=-v
