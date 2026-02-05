@@ -115,19 +115,12 @@ func loadBlockIndexSimple(path string) (map[uint32]blockIndexEntry, error) {
 	}
 
 	const entrySize = 32
-
-	headerCount := binary.LittleEndian.Uint32(data[0:4])
 	actualCount := uint32((len(data) - 4) / entrySize)
 
-	count := headerCount
-	if actualCount > headerCount {
-		count = actualCount
-	}
-
-	index := make(map[uint32]blockIndexEntry, count)
+	index := make(map[uint32]blockIndexEntry, actualCount)
 
 	offset := 4
-	for i := uint32(0); i < count; i++ {
+	for i := uint32(0); i < actualCount; i++ {
 		if offset+entrySize > len(data) {
 			break
 		}

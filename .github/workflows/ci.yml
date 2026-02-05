@@ -25,4 +25,32 @@ jobs:
           make tidy
           git diff --exit-code || (echo "go.mod/go.sum files are not tidy — run 'make tidy' locally" && exit 1)
 
-      - run: make test GOTEST_FLAGS=-v
+      - name: Show system resources
+        run: |
+          echo "=== Memory ==="
+          free -m
+          echo "=== CPU ==="
+          nproc
+          echo "=== Disk ==="
+          df -h .
+
+      - name: Run tests with memory monitoring
+        run: |
+          # Start background memory monitor
+          while true; do
+            echo "$(date +%H:%M:%S) $(free -m | grep Mem | awk '{print "Used:" $3 "MB / Total:" $2 "MB"}')"
+            sleep 5
+          done &
+          MONITOR_PID=$!
+
+          # Run tests
+          make test || TEST_EXIT=$?
+
+          # Stop monitor
+          kill $MONITOR_PID 2>/dev/null || true
+
+          # Show final memory state
+          echo "=== Final memory state ==="
+          free -m
+
+          exit ${TEST_EXIT:-0}
