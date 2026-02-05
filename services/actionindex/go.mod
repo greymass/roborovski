@@ -7,13 +7,13 @@ require (
 	github.com/cockroachdb/pebble/v2 v2.1.3
 	github.com/greymass/roborovski/libraries/abicache v0.0.0
 	github.com/greymass/roborovski/libraries/chain v0.0.0
-	github.com/greymass/roborovski/libraries/config v1.0.0-beta1
+	github.com/greymass/roborovski/libraries/config v0.0.0
 	github.com/greymass/roborovski/libraries/corereader v0.0.0
 	github.com/greymass/roborovski/libraries/encoding v0.0.0
 	github.com/greymass/roborovski/libraries/logger v0.0.0
 	github.com/greymass/roborovski/libraries/openapi v0.0.0
-	github.com/greymass/roborovski/libraries/profiler v1.0.0-beta1
-	github.com/greymass/roborovski/libraries/querytrace v1.0.0-beta1
+	github.com/greymass/roborovski/libraries/profiler v0.0.0
+	github.com/greymass/roborovski/libraries/querytrace v0.0.0
 	github.com/greymass/roborovski/libraries/server v0.0.0
 	github.com/prometheus/client_golang v1.22.0
 	nhooyr.io/websocket v1.8.17
@@ -39,7 +39,7 @@ require (
 	github.com/golang/snappy v0.0.5-0.20231225225746-43d5d4cd4e0e // indirect
 	github.com/google/pprof v0.0.0-20251213031049-b05bdaca462f // indirect
 	github.com/greymass/go-eosio v0.2.6 // indirect
-	github.com/greymass/roborovski/libraries/compression v1.0.0-beta1 // indirect
+	github.com/greymass/roborovski/libraries/compression v0.0.0 // indirect
 	github.com/greymass/roborovski/libraries/corestream v0.0.0 // indirect
 	github.com/greymass/roborovski/libraries/enforce v0.0.0-00010101000000-000000000000 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
@@ -69,11 +69,15 @@ require (
 replace (
 	github.com/greymass/roborovski/libraries/abicache => ../../libraries/abicache
 	github.com/greymass/roborovski/libraries/chain => ../../libraries/chain
+	github.com/greymass/roborovski/libraries/compression => ../../libraries/compression
+	github.com/greymass/roborovski/libraries/config => ../../libraries/config
 	github.com/greymass/roborovski/libraries/corereader => ../../libraries/corereader
 	github.com/greymass/roborovski/libraries/corestream => ../../libraries/corestream
 	github.com/greymass/roborovski/libraries/encoding => ../../libraries/encoding
 	github.com/greymass/roborovski/libraries/enforce => ../../libraries/enforce
 	github.com/greymass/roborovski/libraries/logger => ../../libraries/logger
 	github.com/greymass/roborovski/libraries/openapi => ../../libraries/openapi
+	github.com/greymass/roborovski/libraries/profiler => ../../libraries/profiler
+	github.com/greymass/roborovski/libraries/querytrace => ../../libraries/querytrace
 	github.com/greymass/roborovski/libraries/server => ../../libraries/server
 )
