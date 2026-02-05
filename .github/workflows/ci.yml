@@ -20,6 +20,9 @@ jobs:
         with:
           go-version-file: go.work
 
-      - run: make tidy
-      - run: make build
+      - name: Check workspace is tidy
+        run: |
+          make tidy
+          git diff --exit-code || (echo "go.mod/go.sum files are not tidy — run 'make tidy' locally" && exit 1)
+
       - run: make test
