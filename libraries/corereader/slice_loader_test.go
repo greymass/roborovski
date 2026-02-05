@@ -107,7 +107,7 @@ func TestLoadSliceBuffer_ConcurrentLoading(t *testing.T) {
 		t.Skip("Test data not available")
 	}
 
-	sr, err := NewSliceReaderWithCache(storageDir, 500) // Large cache
+	sr, err := NewSliceReaderWithCache(storageDir, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
