@@ -57,14 +57,6 @@ github.com/google/pprof v0.0.0-20251213031049-b05bdaca462f h1:HU1RgM6NALf/KW9HEY
 github.com/google/pprof v0.0.0-20251213031049-b05bdaca462f/go.mod h1:67FPmZWbr+KDT/VlpWtw6sO9XSjpJmLuHpoLmWiTGgY=
 github.com/greymass/go-eosio v0.2.6 h1:89SZrX8uAgxnffz8LYyXt7R2iyxKdFzPZw8pHP0PprM=
 github.com/greymass/go-eosio v0.2.6/go.mod h1:yM50sEC+R0UYNTwST9H7X9ybIEOCTKx4Y9ZcXL7W1z8=
-github.com/greymass/roborovski/libraries/compression v1.0.0-beta1 h1:552Fu4u9H/gvMiQ0OWOe1XdUK+82RX4aWoBnuEX6bAI=
-github.com/greymass/roborovski/libraries/compression v1.0.0-beta1/go.mod h1:RYOfGsgY7n+NRjpZHkvAxGYjtLujVIoeyRmllh4oMNk=
-github.com/greymass/roborovski/libraries/config v1.0.0-beta1 h1:4K7zSf9fLl0/tRcy5Jg9uHkXCylNOm6fpCAaUV74Gu0=
-github.com/greymass/roborovski/libraries/config v1.0.0-beta1/go.mod h1:E7HmzHAjsIHXxBsTFFxZgJzboXc7pCDv3i4iN2O3jDo=
-github.com/greymass/roborovski/libraries/profiler v1.0.0-beta1 h1:Vt48lgiCyFP2GBnTJjz9eiCw9DaL4FunDdA5i41wtmg=
-github.com/greymass/roborovski/libraries/profiler v1.0.0-beta1/go.mod h1:1Q0sepaNuP4EOQEkun5WWExO52kZVGxk9UDnbwDvRw0=
-github.com/greymass/roborovski/libraries/querytrace v1.0.0-beta1 h1:VRhLg5LsrY/yx5qZfH51t7Zw754mtiPwsQ619Kdluvo=
-github.com/greymass/roborovski/libraries/querytrace v1.0.0-beta1/go.mod h1:ORztkIdtsXoACoeElnuAYP+8K5CHzKrMAkLJOrckFPc=
 github.com/json-iterator/go v1.1.12 h1:PV8peI4a0ysnczrg+LtxykD8LfKY9ML6u2jnxaEnrnM=
 github.com/json-iterator/go v1.1.12/go.mod h1:e30LSqwooZae/UwlEbR2852Gd8hjQvJoHmT4TnhNGBo=
 github.com/kisielk/errcheck v1.5.0/go.mod h1:pFxgyoBC7bSaBwPgfKdkLd5X25qrDl4LWUI2bnpBCr8=
