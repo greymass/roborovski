@@ -12,7 +12,6 @@ import (
 	"syscall"
 
 	goeosio "github.com/greymass/go-eosio/pkg/chain"
-	"github.com/greymass/roborovski/libraries/chain"
 )
 
 type Reader struct {
@@ -198,9 +197,8 @@ func (r *Reader) Decode(contract, action uint64, data []byte, atBlock uint32) (m
 		cachedABI = &abi
 	}
 
-	actionName := chain.NameToString(action)
 	reader := bytes.NewReader(data)
-	decoded, err := cachedABI.Decode(reader, actionName)
+	decoded, err := cachedABI.DecodeAction(reader, goeosio.Name(action))
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode action: %w", err)
 	}
