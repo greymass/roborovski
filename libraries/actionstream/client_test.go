@@ -28,13 +28,15 @@ func TestNewClient(t *testing.T) {
 func TestDecodeAction(t *testing.T) {
 	client := NewClient("localhost:9411", Filter{}, 0, DefaultClientConfig())
 
-	payload := make([]byte, 40)
+	payload := make([]byte, 48)
 	binary.LittleEndian.PutUint64(payload[0:8], 12345)
 	binary.LittleEndian.PutUint32(payload[8:12], 1000)
 	binary.LittleEndian.PutUint32(payload[12:16], 1700000000)
 	binary.LittleEndian.PutUint64(payload[16:24], 0x5530EA033C80A555)
 	binary.LittleEndian.PutUint64(payload[24:32], 0x00000000A89C6360)
 	binary.LittleEndian.PutUint64(payload[32:40], 0x5530EA033C80A555)
+	binary.LittleEndian.PutUint32(payload[40:44], 500)
+	binary.LittleEndian.PutUint32(payload[44:48], 20)
 
 	action, err := client.decodeAction(payload)
 	if err != nil {
@@ -50,19 +52,27 @@ func TestDecodeAction(t *testing.T) {
 	if action.BlockTime != 1700000000 {
 		t.Errorf("expected BlockTime 1700000000, got %d", action.BlockTime)
 	}
+	if action.CpuUsageUs != 500 {
+		t.Errorf("expected CpuUsageUs 500, got %d", action.CpuUsageUs)
+	}
+	if action.NetUsageWords != 20 {
+		t.Errorf("expected NetUsageWords 20, got %d", action.NetUsageWords)
+	}
 }
 
 func TestDecodeActionWithData(t *testing.T) {
 	client := NewClient("localhost:9411", Filter{}, 0, DefaultClientConfig())
 
-	payload := make([]byte, 48)
+	payload := make([]byte, 56)
 	binary.LittleEndian.PutUint64(payload[0:8], 100)
 	binary.LittleEndian.PutUint32(payload[8:12], 500)
 	binary.LittleEndian.PutUint32(payload[12:16], 1600000000)
 	binary.LittleEndian.PutUint64(payload[16:24], 0)
 	binary.LittleEndian.PutUint64(payload[24:32], 0)
 	binary.LittleEndian.PutUint64(payload[32:40], 0)
-	copy(payload[40:], []byte("testdata"))
+	binary.LittleEndian.PutUint32(payload[40:44], 0)
+	binary.LittleEndian.PutUint32(payload[44:48], 0)
+	copy(payload[48:], []byte("testdata"))
 
 	action, err := client.decodeAction(payload)
 	if err != nil {
@@ -634,7 +644,7 @@ func TestDialReceivesBatch(t *testing.T) {
 		payload := make([]byte, length-1)
 		conn.Read(payload)
 
-		actionPayload := make([]byte, 40)
+		actionPayload := make([]byte, 48)
 		binary.LittleEndian.PutUint64(actionPayload[0:8], 999)
 		binary.LittleEndian.PutUint32(actionPayload[8:12], 100)
 		binary.LittleEndian.PutUint32(actionPayload[12:16], 1700000000)
@@ -822,7 +832,7 @@ func TestRecvLoopReceivesActions(t *testing.T) {
 		close(serverReady)
 
 		for i := uint64(0); i < 3; i++ {
-			actionPayload := make([]byte, 40)
+			actionPayload := make([]byte, 48)
 			binary.LittleEndian.PutUint64(actionPayload[0:8], 1000+i)
 			binary.LittleEndian.PutUint32(actionPayload[8:12], uint32(100+i))
 			binary.LittleEndian.PutUint32(actionPayload[12:16], 1700000000)

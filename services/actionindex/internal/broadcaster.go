@@ -14,8 +14,10 @@ type StreamedAction struct {
 	BlockTime  uint32
 	Contract   uint64
 	Action     uint64
-	Receiver   uint64
-	ActionData []byte
+	Receiver      uint64
+	ActionData    []byte
+	CpuUsageUs    uint32
+	NetUsageWords uint32
 }
 
 type ActionBroadcaster struct {

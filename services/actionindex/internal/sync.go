@@ -347,14 +347,17 @@ func (p *AccountHistoryProcessor) broadcastActions(block corereader.Block) error
 		for _, idx := range matchingActions {
 			a := &block.Actions[idx]
 			actionData := block.GetActionDataBySeq(a.GlobalSeq)
+			cpuUs, netWords := block.GetResourceUsage(a.GlobalSeq)
 			if p.syncer.broadcaster.Broadcast(StreamedAction{
-				GlobalSeq:  a.GlobalSeq,
-				BlockNum:   block.BlockNum,
-				BlockTime:  block.BlockTime,
-				Contract:   a.Contract,
-				Action:     a.Action,
-				Receiver:   a.Account,
-				ActionData: actionData,
+				GlobalSeq:     a.GlobalSeq,
+				BlockNum:      block.BlockNum,
+				BlockTime:     block.BlockTime,
+				Contract:      a.Contract,
+				Action:        a.Action,
+				Receiver:      a.Account,
+				ActionData:    actionData,
+				CpuUsageUs:    cpuUs,
+				NetUsageWords: netWords,
 			}) {
 				delivered++
 			}
@@ -390,13 +393,15 @@ func (p *AccountHistoryProcessor) broadcastActions(block corereader.Block) error
 				actionData, _ = hex.DecodeString(at.Act.Data)
 			}
 			if p.syncer.broadcaster.Broadcast(StreamedAction{
-				GlobalSeq:  seqs[i],
-				BlockNum:   block.BlockNum,
-				BlockTime:  block.BlockTime,
-				Contract:   block.Actions[idx].Contract,
-				Action:     block.Actions[idx].Action,
-				Receiver:   block.Actions[idx].Account,
-				ActionData: actionData,
+				GlobalSeq:     seqs[i],
+				BlockNum:      block.BlockNum,
+				BlockTime:     block.BlockTime,
+				Contract:      block.Actions[idx].Contract,
+				Action:        block.Actions[idx].Action,
+				Receiver:      block.Actions[idx].Account,
+				ActionData:    actionData,
+				CpuUsageUs:    at.CpuUsageUs,
+				NetUsageWords: at.NetUsageWords,
 			}) {
 				delivered++
 			}

@@ -51,13 +51,15 @@ func DefaultClientConfig() ClientConfig {
 }
 
 type Action struct {
-	GlobalSeq  uint64
-	BlockNum   uint32
-	BlockTime  uint32
-	Contract   string
-	Action     string
-	Receiver   string
-	ActionData []byte
+	GlobalSeq     uint64
+	BlockNum      uint32
+	BlockTime     uint32
+	Contract      string
+	Action        string
+	Receiver      string
+	ActionData    []byte
+	CpuUsageUs    uint32
+	NetUsageWords uint32
 }
 
 type Filter struct {
@@ -490,7 +492,7 @@ func (c *Client) writeMessage(w io.Writer, msgType uint8, payload []byte) error 
 }
 
 func (c *Client) decodeAction(payload []byte) (Action, error) {
-	if len(payload) < 40 {
+	if len(payload) < 48 {
 		return Action{}, errors.New("action payload too short")
 	}
 
@@ -500,20 +502,24 @@ func (c *Client) decodeAction(payload []byte) (Action, error) {
 	contract := binary.LittleEndian.Uint64(payload[16:24])
 	actionName := binary.LittleEndian.Uint64(payload[24:32])
 	receiver := binary.LittleEndian.Uint64(payload[32:40])
+	cpuUsageUs := binary.LittleEndian.Uint32(payload[40:44])
+	netUsageWords := binary.LittleEndian.Uint32(payload[44:48])
 
 	var actionData []byte
-	if len(payload) > 40 {
-		actionData = payload[40:]
+	if len(payload) > 48 {
+		actionData = payload[48:]
 	}
 
 	return Action{
-		GlobalSeq:  globalSeq,
-		BlockNum:   blockNum,
-		BlockTime:  blockTime,
-		Contract:   chain.NameToString(contract),
-		Action:     chain.NameToString(actionName),
-		Receiver:   chain.NameToString(receiver),
-		ActionData: actionData,
+		GlobalSeq:     globalSeq,
+		BlockNum:      blockNum,
+		BlockTime:     blockTime,
+		Contract:      chain.NameToString(contract),
+		Action:        chain.NameToString(actionName),
+		Receiver:      chain.NameToString(receiver),
+		ActionData:    actionData,
+		CpuUsageUs:    cpuUsageUs,
+		NetUsageWords: netUsageWords,
 	}, nil
 }
 

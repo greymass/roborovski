@@ -227,12 +227,14 @@ func (c *StreamCatchup) processBatch(seqs []uint64, sendAction func(StreamedActi
 	sent := 0
 	for j, at := range actions {
 		action := StreamedAction{
-			GlobalSeq: seqs[j],
-			BlockNum:  at.BlockNum,
-			BlockTime: chain.TimeToUint32(at.BlockTime),
-			Contract:  chain.StringToName(at.Act.Account),
-			Action:    chain.StringToName(at.Act.Name),
-			Receiver:  chain.StringToName(at.Receiver),
+			GlobalSeq:     seqs[j],
+			BlockNum:      at.BlockNum,
+			BlockTime:     chain.TimeToUint32(at.BlockTime),
+			Contract:      chain.StringToName(at.Act.Account),
+			Action:        chain.StringToName(at.Act.Name),
+			Receiver:      chain.StringToName(at.Receiver),
+			CpuUsageUs:    at.CpuUsageUs,
+			NetUsageWords: at.NetUsageWords,
 		}
 
 		if !c.filter.Matches(action) {

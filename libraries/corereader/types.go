@@ -23,6 +23,8 @@ type CanonicalAction struct {
 	TrxIndex           uint32
 	ContractUint64     uint64
 	ActionUint64       uint64
+	CpuUsageUs         uint32
+	NetUsageWords      uint32
 }
 
 // RawBlock contains unfiltered block data as read from storage.
@@ -105,6 +107,18 @@ func (b *Block) HasActionData() bool {
 
 func (b *Block) SetRawBlock(raw *RawBlock) {
 	b.rawBlock = raw
+}
+
+func (b *Block) GetResourceUsage(globalSeq uint64) (cpuUs, netWords uint32) {
+	if b.rawBlock == nil {
+		return 0, 0
+	}
+	for i := range b.rawBlock.Actions {
+		if b.rawBlock.Actions[i].GlobalSeqUint64 == globalSeq {
+			return b.rawBlock.Actions[i].CpuUsageUs, b.rawBlock.Actions[i].NetUsageWords
+		}
+	}
+	return 0, 0
 }
 
 func (b *Block) GetTransactionID(trxIndex uint32) [32]byte {

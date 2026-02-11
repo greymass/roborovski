@@ -298,7 +298,7 @@ func (ts *StreamTCPServer) sendAction(conn net.Conn, action StreamedAction, deco
 		}
 	}
 
-	payload := make([]byte, 40+len(actionData))
+	payload := make([]byte, 48+len(actionData))
 
 	binary.LittleEndian.PutUint64(payload[0:8], action.GlobalSeq)
 	binary.LittleEndian.PutUint32(payload[8:12], action.BlockNum)
@@ -306,7 +306,9 @@ func (ts *StreamTCPServer) sendAction(conn net.Conn, action StreamedAction, deco
 	binary.LittleEndian.PutUint64(payload[16:24], action.Contract)
 	binary.LittleEndian.PutUint64(payload[24:32], action.Action)
 	binary.LittleEndian.PutUint64(payload[32:40], action.Receiver)
-	copy(payload[40:], actionData)
+	binary.LittleEndian.PutUint32(payload[40:44], action.CpuUsageUs)
+	binary.LittleEndian.PutUint32(payload[44:48], action.NetUsageWords)
+	copy(payload[48:], actionData)
 
 	return ts.writeMessage(conn, msgType, payload)
 }

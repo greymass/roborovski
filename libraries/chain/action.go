@@ -66,6 +66,8 @@ type ActionTrace struct {
 	ProducerBlockID  string         `json:"producer_block_id"`
 	AccountRAMDeltas []AccountDelta `json:"account_ram_deltas"`
 
+	CpuUsageUs    uint32 `json:"-"`
+	NetUsageWords uint32 `json:"-"`
 	GlobalSeqUint64 uint64 `json:"-"`
 }
 

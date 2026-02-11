@@ -476,6 +476,8 @@ func handleRPC(
 		internal.HandleGetActions(cfg, store, indexes, reader, abiReader, w, r)
 	case strings.HasPrefix(path, "/account/") && strings.HasSuffix(path, "/activity"):
 		internal.HandleAccountActivity(cfg, store, indexes, reader, abiReader, w, r)
+	case strings.HasPrefix(path, "/account/") && strings.HasSuffix(path, "/usage"):
+		internal.HandleAccountUsage(cfg, store, indexes, reader, abiReader, w, r)
 	case strings.HasPrefix(path, "/account/") && strings.HasSuffix(path, "/log"):
 		internal.HandleAccountLog(cfg, store, indexes, reader, abiReader, w, r)
 	case strings.HasPrefix(path, "/account/") && strings.HasSuffix(path, "/stats"):
