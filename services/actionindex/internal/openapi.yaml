@@ -13,6 +13,8 @@ tags:
     description: Account activity and action history
   - name: Legacy Account History
     description: v1 API endpoints for account history
+  - name: Actions
+    description: Direct action lookup by global sequence number
   - name: Debug
     description: Internal state inspection (requires --debug-endpoints)
 
@@ -475,6 +477,61 @@ paths:
               schema:
                 $ref: "#/components/schemas/AccountStatsErrorResponse"
 
+  /action/{seq}:
+    get:
+      operationId: getActionBySeq
+      summary: Get action by global sequence
+      description: Look up a single action by its global sequence number. Returns either a minimal action object or a full action trace.
+      tags:
+        - Actions
+      parameters:
+        - name: seq
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: uint64
+          description: Global sequence number
+        - name: trace
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+          description: Return full action trace instead of minimal action
+        - name: decode
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: true
+          description: Decode action data using ABI
+      responses:
+        "200":
+          description: Action found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActionLookupResponse"
+        "400":
+          description: Invalid sequence number
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountActivityErrorResponse"
+        "404":
+          description: Action not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountActivityErrorResponse"
+        "500":
+          description: Internal error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountActivityErrorResponse"
+
   /debug/account:
     get:
       operationId: debugAccount
@@ -881,6 +938,52 @@ components:
               type: string
             message:
               type: string
+
+    ActionLookupResponse:
+      type: object
+      description: Single action lookup result
+      required:
+        - global_action_seq
+        - block_num
+        - block_time
+        - trx_id
+      properties:
+        global_action_seq:
+          type: integer
+          format: uint64
+        block_num:
+          type: integer
+          format: uint32
+        block_time:
+          type: string
+        action:
+          type: object
+          description: Minimal action object (when trace=false)
+          properties:
+            account:
+              type: string
+            name:
+              type: string
+            authorization:
+              type: array
+              items:
+                type: object
+                properties:
+                  actor:
+                    type: string
+                  permission:
+                    type: string
+            data:
+              oneOf:
+                - type: object
+                - type: string
+            hex_data:
+              type: string
+        action_trace:
+          $ref: "#/components/schemas/ActionTrace"
+          description: Full action trace (when trace=true)
+        trx_id:
+          type: string
 
     ActionResult:
       type: object

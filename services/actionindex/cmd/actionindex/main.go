@@ -482,6 +482,8 @@ func handleRPC(
 		internal.HandleAccountLog(cfg, store, indexes, reader, abiReader, w, r)
 	case strings.HasPrefix(path, "/account/") && strings.HasSuffix(path, "/stats"):
 		internal.HandleAccountStats(indexes, w, r)
+	case strings.HasPrefix(path, "/action/"):
+		internal.HandleAction(cfg, reader, abiReader, w, r)
 	case strings.HasPrefix(path, "/debug/"):
 		if !cfg.DebugEndpoints {
 			http.Error(w, "debug endpoints not enabled (use --debug-endpoints)", http.StatusNotFound)

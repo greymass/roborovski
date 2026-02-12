@@ -30,6 +30,7 @@ var registeredRoutes = map[string][]string{
 	"/account/{account}/usage":    {"GET"},
 	"/account/{account}/log":      {"GET"},
 	"/account/{account}/stats":    {"GET"},
+	"/action/{seq}":               {"GET"},
 }
 
 var debugRoutes = map[string][]string{
