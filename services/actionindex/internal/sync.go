@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/greymass/roborovski/libraries/chain"
 	"github.com/greymass/roborovski/libraries/corereader"
 	"github.com/greymass/roborovski/libraries/logger"
 )
@@ -374,11 +375,10 @@ func (p *AccountHistoryProcessor) broadcastActions(block corereader.Block) error
 			seqs[i] = block.Actions[idx].GlobalSeq
 		}
 
-		traces, _, err := p.syncer.reader.GetActionsByGlobalSeqs(seqs)
+		traces, _, err := p.fetchActionDataWithRetry(block.BlockNum, seqs)
 		if err != nil {
-			errMsg := fmt.Sprintf("failed to fetch action data for block %d: %v", block.BlockNum, err)
-			p.syncer.broadcaster.BroadcastError(ActionErrorDataInconsistent, errMsg)
-			return fmt.Errorf("%s", errMsg)
+			p.syncer.broadcaster.BroadcastError(ActionErrorDataInconsistent, err.Error())
+			return err
 		}
 
 		var sendStart time.Time
@@ -419,6 +419,37 @@ func (p *AccountHistoryProcessor) broadcastActions(block corereader.Block) error
 	}
 
 	return nil
+}
+
+func (p *AccountHistoryProcessor) fetchActionDataWithRetry(blockNum uint32, seqs []uint64) ([]chain.ActionTrace, *corereader.FetchTimings, error) {
+	const maxAttempts = 10
+	const initialDelay = 200 * time.Millisecond
+
+	delay := initialDelay
+	start := time.Now()
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		traces, timings, err := p.syncer.reader.GetActionsByGlobalSeqs(seqs)
+		if err == nil {
+			if attempt > 1 {
+				logger.Printf("warning", "Fetched action data for block %d after %d attempts (%v elapsed)",
+					blockNum, attempt, time.Since(start))
+			}
+			return traces, timings, nil
+		}
+
+		if attempt == maxAttempts {
+			return nil, nil, fmt.Errorf("failed to fetch action data for block %d after %d attempts (%v elapsed): %v",
+				blockNum, maxAttempts, time.Since(start), err)
+		}
+
+		logger.Printf("warning", "Failed to fetch action data for block %d (attempt %d/%d), retrying in %v: %v",
+			blockNum, attempt, maxAttempts, delay, err)
+		time.Sleep(delay)
+		delay *= 2
+	}
+
+	return nil, nil, nil
 }
 
 func (p *AccountHistoryProcessor) ShouldCommit(blocksProcessed int) bool {
