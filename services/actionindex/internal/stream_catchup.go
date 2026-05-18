@@ -234,10 +234,11 @@ func (c *StreamCatchup) processBatch(seqs []uint64, account uint64, seqToAccount
 	}
 
 	sent := 0
+	var matchedViaBuf [1]uint64
 	for j, at := range actions {
-		receiver := account
+		matchedViaBuf[0] = account
 		if seqToAccount != nil {
-			receiver = seqToAccount[seqs[j]]
+			matchedViaBuf[0] = seqToAccount[seqs[j]]
 		}
 		action := StreamedAction{
 			GlobalSeq:     seqs[j],
@@ -245,12 +246,12 @@ func (c *StreamCatchup) processBatch(seqs []uint64, account uint64, seqToAccount
 			BlockTime:     chain.TimeToUint32(at.BlockTime),
 			Contract:      chain.StringToName(at.Act.Account),
 			Action:        chain.StringToName(at.Act.Name),
-			Receiver:      receiver,
+			Receiver:      chain.StringToName(at.Receiver),
 			CpuUsageUs:    at.CpuUsageUs,
 			NetUsageWords: at.NetUsageWords,
 		}
 
-		if !c.filter.Matches(action) {
+		if !c.filter.Matches(action, matchedViaBuf[:]) {
 			continue
 		}
 

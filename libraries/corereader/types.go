@@ -56,6 +56,13 @@ func (r *RawBlock) HasActionData() bool {
 	return r.rawData != nil
 }
 
+// SetActionData populates the raw action-data buffers (test helper).
+func (r *RawBlock) SetActionData(rawData []byte, offsets, lengths []uint32) {
+	r.rawData = rawData
+	r.dataOffsets = offsets
+	r.dataLengths = lengths
+}
+
 // Action represents a canonically-deduplicated action for a specific account.
 // This is the output of canonical filtering - one Action per (account, globalSeq) pair.
 type Action struct {
@@ -65,6 +72,7 @@ type Action struct {
 	GlobalSeq    uint64
 	TrxIndex     uint32
 	IsAuthorizer bool
+	Receiver     uint64 // chain receiver; differs from Account on authorizer-indexed entries
 }
 
 // ContractExecution represents a contract execution (receiver == contract).

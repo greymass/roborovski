@@ -309,3 +309,180 @@ func abs(x float64) float64 {
 	}
 	return x
 }
+
+func TestFilterRawBlock_ActionReceiver_ReceiverPath(t *testing.T) {
+	const (
+		acctIdx  = uint32(0)
+		contract = uint64(0xC0FFEE)
+		action   = uint64(0xACEACE)
+		seq      = uint64(42)
+		account  = uint64(0xA11CE)
+	)
+
+	raw := RawBlock{
+		BlockNum:     1,
+		BlockTime:    1000,
+		NamesInBlock: []uint64{account},
+		Notifications: map[uint64][]uint64{
+			account: {seq},
+		},
+		ActionMeta: []ActionMetadata{
+			{GlobalSeq: seq, Contract: contract, Action: action},
+		},
+		Actions: []CanonicalAction{
+			{
+				ActionOrdinal:      1,
+				CreatorAO:          0,
+				ReceiverUint64:     account, // chain receiver == account
+				DataIndex:          0,
+				AuthAccountIndexes: []uint32{acctIdx},
+				GlobalSeqUint64:    seq,
+				TrxIndex:           0,
+				ContractUint64:     contract,
+				ActionUint64:       action,
+			},
+		},
+	}
+
+	block := FilterRawBlock(raw, nil)
+	if len(block.Actions) != 1 {
+		t.Fatalf("expected 1 action, got %d", len(block.Actions))
+	}
+	got := block.Actions[0]
+	if got.Account != account {
+		t.Errorf("Account = %#x, want %#x", got.Account, account)
+	}
+	if got.Receiver != account {
+		t.Errorf("Receiver = %#x, want %#x (chain receiver == account on receiver path)", got.Receiver, account)
+	}
+}
+
+func TestFilterRawBlock_ActionReceiver_AuthorizerPath(t *testing.T) {
+	const (
+		contract    = uint64(0xC0FFEE)
+		action      = uint64(0xACEACE)
+		seq         = uint64(43)
+		chainRecv   = uint64(0xA11CE)
+		authAccount = uint64(0xB0B)
+	)
+
+	raw := RawBlock{
+		BlockNum:     1,
+		BlockTime:    1000,
+		NamesInBlock: []uint64{authAccount}, // index 0
+		Notifications: map[uint64][]uint64{
+			authAccount: {seq}, // authAccount tracked, gets notified for seq it didn't receive
+		},
+		ActionMeta: []ActionMetadata{
+			{GlobalSeq: seq, Contract: contract, Action: action},
+		},
+		Actions: []CanonicalAction{
+			{
+				ActionOrdinal:      1,
+				CreatorAO:          0,
+				ReceiverUint64:     chainRecv, // chain receiver != tracked account
+				DataIndex:          0,
+				AuthAccountIndexes: []uint32{0}, // index into NamesInBlock = authAccount
+				GlobalSeqUint64:    seq,
+				TrxIndex:           0,
+				ContractUint64:     contract,
+				ActionUint64:       action,
+			},
+		},
+	}
+
+	block := FilterRawBlock(raw, nil)
+	if len(block.Actions) != 1 {
+		t.Fatalf("expected 1 action, got %d", len(block.Actions))
+	}
+	got := block.Actions[0]
+	if got.Account != authAccount {
+		t.Errorf("Account = %#x, want %#x (authorizer-path Account = the authorizer)", got.Account, authAccount)
+	}
+	if got.Receiver != chainRecv {
+		t.Errorf("Receiver = %#x, want %#x (chain receiver of the underlying action_trace)", got.Receiver, chainRecv)
+	}
+	if !got.IsAuthorizer {
+		t.Errorf("IsAuthorizer = false, want true on authorizer-path emission")
+	}
+}
+
+func TestFilterRawBlockIntoTimed_ActionReceiver_BothPaths(t *testing.T) {
+	const (
+		contract    = uint64(0xC0FFEE)
+		action      = uint64(0xACEACE)
+		recvSeq     = uint64(50)
+		authSeq     = uint64(51)
+		recvAccount = uint64(0xA11CE)
+		chainRecv   = uint64(0xCA1F)
+		authAccount = uint64(0xB0B)
+	)
+
+	raw := RawBlock{
+		BlockNum:     1,
+		BlockTime:    1000,
+		NamesInBlock: []uint64{authAccount}, // index 0
+		Notifications: map[uint64][]uint64{
+			recvAccount: {recvSeq}, // receiver-path
+			authAccount: {authSeq}, // authorizer-path
+		},
+		ActionMeta: []ActionMetadata{
+			{GlobalSeq: recvSeq, Contract: contract, Action: action},
+			{GlobalSeq: authSeq, Contract: contract, Action: action},
+		},
+		Actions: []CanonicalAction{
+			{
+				ActionOrdinal:      1,
+				CreatorAO:          0,
+				ReceiverUint64:     recvAccount, // chain receiver == recvAccount on this seq
+				DataIndex:          0,
+				AuthAccountIndexes: []uint32{0}, // authAccount (incidentally also auth here, not tested)
+				GlobalSeqUint64:    recvSeq,
+				TrxIndex:           0,
+				ContractUint64:     contract,
+				ActionUint64:       action,
+			},
+			{
+				ActionOrdinal:      2,
+				CreatorAO:          0,
+				ReceiverUint64:     chainRecv, // chain receiver != authAccount on this seq
+				DataIndex:          0,
+				AuthAccountIndexes: []uint32{0}, // authAccount
+				GlobalSeqUint64:    authSeq,
+				TrxIndex:           0,
+				ContractUint64:     contract,
+				ActionUint64:       action,
+			},
+		},
+	}
+
+	timing := &FilterTiming{}
+	block, _, _ := FilterRawBlockIntoTimed(raw, nil, nil, nil, timing)
+
+	bySeq := map[uint64]Action{}
+	for _, a := range block.Actions {
+		bySeq[a.GlobalSeq] = a
+	}
+
+	recvEntry, ok := bySeq[recvSeq]
+	if !ok {
+		t.Fatalf("missing receiver-path entry for seq %d", recvSeq)
+	}
+	if recvEntry.Receiver != recvAccount {
+		t.Errorf("receiver-path Receiver = %#x, want %#x", recvEntry.Receiver, recvAccount)
+	}
+
+	authEntry, ok := bySeq[authSeq]
+	if !ok {
+		t.Fatalf("missing authorizer-path entry for seq %d", authSeq)
+	}
+	if authEntry.Account != authAccount {
+		t.Errorf("authorizer-path Account = %#x, want %#x", authEntry.Account, authAccount)
+	}
+	if authEntry.Receiver != chainRecv {
+		t.Errorf("authorizer-path Receiver = %#x, want %#x (chain receiver)", authEntry.Receiver, chainRecv)
+	}
+	if !authEntry.IsAuthorizer {
+		t.Errorf("authorizer-path IsAuthorizer = false, want true")
+	}
+}

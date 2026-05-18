@@ -74,7 +74,7 @@ func (b *ActionBroadcaster) Unsubscribe(id uint64) {
 	}
 }
 
-func (b *ActionBroadcaster) Broadcast(action StreamedAction) bool {
+func (b *ActionBroadcaster) Broadcast(action StreamedAction, matchedVia []uint64) bool {
 	if b.closed.Load() || !b.liveMode.Load() {
 		return false
 	}
@@ -87,9 +87,9 @@ func (b *ActionBroadcaster) Broadcast(action StreamedAction) bool {
 		if sub.IsCatchingUp() {
 			continue
 		}
-		if !sub.filter.Matches(action) {
-			logger.Printf("debug-stream", "Subscription %d filter rejected: contract=%x receiver=%x action=%x (filter: contracts=%d receivers=%d actions=%d)",
-				sub.id, action.Contract, action.Receiver, action.Action,
+		if !sub.filter.Matches(action, matchedVia) {
+			logger.Printf("debug-stream", "Subscription %d filter rejected: contract=%x receiver=%x action=%x matchedVia=%v (filter: contracts=%d receivers=%d actions=%d)",
+				sub.id, action.Contract, action.Receiver, action.Action, matchedVia,
 				len(sub.filter.Contracts), len(sub.filter.Receivers), len(sub.filter.Actions))
 			continue
 		}
@@ -163,7 +163,7 @@ func (b *ActionBroadcaster) SubscriberCount() int {
 	return len(b.subs)
 }
 
-func (b *ActionBroadcaster) CouldMatch(contract, action, receiver uint64) bool {
+func (b *ActionBroadcaster) CouldMatch(contract, action uint64, matchedVia []uint64) bool {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
@@ -189,13 +189,14 @@ func (b *ActionBroadcaster) CouldMatch(contract, action, receiver uint64) bool {
 		}
 
 		if len(f.Receivers) == 0 {
-			if contractMatch && receiver == contract {
+			if contractMatch {
 				return true
 			}
 			continue
 		}
 
-		_, receiverMatch := f.Receivers[receiver]
+		receiverMatch := anyInSet(matchedVia, f.Receivers)
+
 		if len(f.Contracts) == 0 {
 			if receiverMatch {
 				return true

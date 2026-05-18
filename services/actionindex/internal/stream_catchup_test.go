@@ -66,8 +66,9 @@ func TestProcessBatch_DeliversAuthorizerOnlyAction(t *testing.T) {
 	if got.Action != chain.StringToName("setabi") {
 		t.Errorf("Action = %s, want setabi", chain.NameToString(got.Action))
 	}
-	if got.Receiver != tracked {
-		t.Errorf("Receiver = %s, want shipload.gm (tracked account)", chain.NameToString(got.Receiver))
+	if got.Receiver != chain.StringToName(setabiTrace.Receiver) {
+		t.Errorf("Receiver = %s, want %s (chain receiver, not indexed account)",
+			chain.NameToString(got.Receiver), setabiTrace.Receiver)
 	}
 }
 
@@ -107,8 +108,9 @@ func TestProcessBatch_DeliversReceiverPathAction(t *testing.T) {
 	if got.Action != chain.StringToName("transfer") {
 		t.Errorf("Action = %s, want transfer", chain.NameToString(got.Action))
 	}
-	if got.Receiver != tracked {
-		t.Errorf("Receiver = %s, want shipload.gm", chain.NameToString(got.Receiver))
+	if got.Receiver != chain.StringToName(transferTrace.Receiver) {
+		t.Errorf("Receiver = %s, want %s (chain receiver)",
+			chain.NameToString(got.Receiver), transferTrace.Receiver)
 	}
 }
 
@@ -157,14 +159,12 @@ func TestProcessBatch_MultiAccount_AttributesPerSeq(t *testing.T) {
 	if sent != 3 || len(delivered) != 3 {
 		t.Fatalf("expected 3 deliveries, got sent=%d delivered=%d", sent, len(delivered))
 	}
-	if got := delivered[100].Receiver; got != platform {
-		t.Errorf("seq 100 Receiver = %s, want platform.gm", chain.NameToString(got))
-	}
-	if got := delivered[200].Receiver; got != shipload {
-		t.Errorf("seq 200 Receiver = %s, want shipload.gm", chain.NameToString(got))
-	}
-	if got := delivered[300].Receiver; got != platform {
-		t.Errorf("seq 300 Receiver = %s, want platform.gm", chain.NameToString(got))
+	for _, seq := range []uint64{100, 200, 300} {
+		want := chain.StringToName(reader.bySeq[seq].Receiver)
+		if got := delivered[seq].Receiver; got != want {
+			t.Errorf("seq %d Receiver = %s, want %s (chain receiver from trace)",
+				seq, chain.NameToString(got), chain.NameToString(want))
+		}
 	}
 }
 
@@ -197,5 +197,55 @@ func TestProcessBatch_AppliesContractActionFilter(t *testing.T) {
 	}
 	if sent != 0 {
 		t.Fatalf("expected 0 deliveries, got %d", sent)
+	}
+}
+
+func TestProcessBatch_AuthorizerOnly_PreservesChainReceiver(t *testing.T) {
+	// Mirrors the Jungle4 production reproduction:
+	// atomicassets::createschema with shipload.gm as authorizer.
+	// Subscriber filtered on receivers=[shipload.gm] should still receive
+	// the action, but with wire Receiver=atomicassets (chain truth).
+	shipload := chain.StringToName("shipload.gm")
+	atomic := chain.StringToName("atomicassets")
+
+	createSchema := chain.ActionTrace{
+		Receiver: "atomicassets",
+		Act: chain.Action{
+			Account: "atomicassets",
+			Name:    "createschema",
+			Authorization: []chain.PermissionLevel{
+				{Actor: "shipload.gm", Permission: "active"},
+			},
+		},
+	}
+
+	catchup := &StreamCatchup{
+		reader: &stubBaseReader{traces: []chain.ActionTrace{createSchema}},
+		filter: ActionFilter{
+			Receivers: map[uint64]struct{}{shipload: {}},
+		},
+	}
+
+	var delivered []StreamedAction
+	sent, err := catchup.processBatch([]uint64{343972368}, shipload, nil, func(a StreamedAction) error {
+		delivered = append(delivered, a)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("processBatch error: %v", err)
+	}
+	if sent != 1 || len(delivered) != 1 {
+		t.Fatalf("expected 1 delivery, got sent=%d delivered=%d", sent, len(delivered))
+	}
+	got := delivered[0]
+	if got.Receiver != atomic {
+		t.Errorf("Receiver = %s, want atomicassets (chain receiver, not indexed-via shipload.gm)",
+			chain.NameToString(got.Receiver))
+	}
+	if got.Contract != atomic {
+		t.Errorf("Contract = %s, want atomicassets", chain.NameToString(got.Contract))
+	}
+	if got.Action != chain.StringToName("createschema") {
+		t.Errorf("Action = %s, want createschema", chain.NameToString(got.Action))
 	}
 }
