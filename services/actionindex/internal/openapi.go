@@ -27,8 +27,10 @@ func InitOpenAPI(version string) error {
 var registeredRoutes = map[string][]string{
 	"/v1/history/get_actions":     {"GET", "POST"},
 	"/account/{account}/activity": {"GET"},
+	"/account/{account}/usage":    {"GET"},
 	"/account/{account}/log":      {"GET"},
 	"/account/{account}/stats":    {"GET"},
+	"/action/{seq}":               {"GET"},
 }
 
 var debugRoutes = map[string][]string{

@@ -1,6 +1,10 @@
 package internal
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/greymass/roborovski/libraries/chain"
+)
 
 func TestActionFilter_Matches_ContractOnly(t *testing.T) {
 	contract := uint64(5000)
@@ -47,7 +51,7 @@ func TestActionFilter_Matches_ContractOnly(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := filter.Matches(tt.action)
+			got := filter.Matches(tt.action, []uint64{tt.action.Receiver})
 			if got != tt.want {
 				t.Errorf("Matches() = %v, want %v", got, tt.want)
 			}
@@ -101,7 +105,7 @@ func TestActionFilter_Matches_ContractAndReceiver(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := filter.Matches(tt.action)
+			got := filter.Matches(tt.action, []uint64{tt.action.Receiver})
 			if got != tt.want {
 				t.Errorf("Matches() = %v, want %v", got, tt.want)
 			}
@@ -144,7 +148,7 @@ func TestActionFilter_Matches_ReceiverOnly(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := filter.Matches(tt.action)
+			got := filter.Matches(tt.action, []uint64{tt.action.Receiver})
 			if got != tt.want {
 				t.Errorf("Matches() = %v, want %v", got, tt.want)
 			}
@@ -188,7 +192,7 @@ func TestActionFilter_Matches_WithActions(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := filter.Matches(tt.action)
+			got := filter.Matches(tt.action, []uint64{tt.action.Receiver})
 			if got != tt.want {
 				t.Errorf("Matches() = %v, want %v", got, tt.want)
 			}
@@ -205,7 +209,68 @@ func TestActionFilter_Matches_EmptyFilter(t *testing.T) {
 		Action:   6000,
 	}
 
-	if filter.Matches(action) {
+	if filter.Matches(action, []uint64{action.Receiver}) {
 		t.Error("Empty filter should not match any action")
+	}
+}
+
+func TestActionFilter_Matches_MatchedViaSingle(t *testing.T) {
+	a := chain.StringToName("alice")
+	f := ActionFilter{
+		Receivers: map[uint64]struct{}{a: {}},
+	}
+	act := StreamedAction{
+		Contract: chain.StringToName("eosio.token"),
+		Action:   chain.StringToName("transfer"),
+		Receiver: chain.StringToName("bob"), // chain truth != matched-via
+	}
+	if !f.Matches(act, []uint64{a}) {
+		t.Errorf("expected match: filter Receivers={alice}, matchedVia=[alice]")
+	}
+}
+
+func TestActionFilter_Matches_MatchedViaMulti(t *testing.T) {
+	a := chain.StringToName("alice")
+	b := chain.StringToName("bob")
+	f := ActionFilter{
+		Receivers: map[uint64]struct{}{a: {}},
+	}
+	act := StreamedAction{
+		Contract: chain.StringToName("eosio.token"),
+		Action:   chain.StringToName("transfer"),
+		Receiver: chain.StringToName("carol"),
+	}
+	if !f.Matches(act, []uint64{b, a}) {
+		t.Errorf("expected match: any element of matchedVia in Receivers should match")
+	}
+}
+
+func TestActionFilter_Matches_MatchedViaNone(t *testing.T) {
+	a := chain.StringToName("alice")
+	b := chain.StringToName("bob")
+	f := ActionFilter{
+		Receivers: map[uint64]struct{}{a: {}},
+	}
+	act := StreamedAction{
+		Contract: chain.StringToName("eosio.token"),
+		Action:   chain.StringToName("transfer"),
+		Receiver: a,
+	}
+	if f.Matches(act, []uint64{b}) {
+		t.Errorf("expected no match: matchedVia=[bob] is not in filter Receivers={alice}; chain Receiver is no longer consulted")
+	}
+}
+
+func TestActionFilter_Matches_ContractOnly_NilMatchedVia(t *testing.T) {
+	f := ActionFilter{
+		Contracts: map[uint64]struct{}{chain.StringToName("eosio.token"): {}},
+	}
+	act := StreamedAction{
+		Contract: chain.StringToName("eosio.token"),
+		Action:   chain.StringToName("transfer"),
+		Receiver: chain.StringToName("alice"),
+	}
+	if !f.Matches(act, nil) {
+		t.Errorf("expected match on contract-only filter regardless of matchedVia")
 	}
 }

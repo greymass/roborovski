@@ -936,7 +936,7 @@ func (cat *compressedActionTrace) At(blkData *blockData, blockNum uint32, glob u
 		AbiSequence:    cat.AbiSequence,
 	}
 
-	return &chain.ActionTrace{
+	at := &chain.ActionTrace{
 		ActionOrdinal:    cat.ActionOrdinal,
 		CreatorAO:        cat.CreatorAO,
 		ClosestUAAO:      cat.ClosestUAAO,
@@ -952,6 +952,14 @@ func (cat *compressedActionTrace) At(blkData *blockData, blockNum uint32, glob u
 		AccountRAMDeltas: ard,
 		GlobalSeqUint64:  glob,
 	}
+
+	if int(cat.TrxIDIndex) < len(blkData.TrxMetaInBlock) {
+		meta := &blkData.TrxMetaInBlock[cat.TrxIDIndex]
+		at.CpuUsageUs = meta.CpuUsageUs
+		at.NetUsageWords = meta.NetUsageWords
+	}
+
+	return at
 }
 
 func (cat *compressedActionTrace) CanonicalAt(blkData *blockData, glob uint64) CanonicalAction {
@@ -961,7 +969,7 @@ func (cat *compressedActionTrace) CanonicalAt(blkData *blockData, glob uint64) C
 		authAccountIndexes[i] = auth.AccountIndex
 	}
 
-	return CanonicalAction{
+	ca := CanonicalAction{
 		ActionOrdinal:      cat.ActionOrdinal,
 		CreatorAO:          cat.CreatorAO,
 		ReceiverUint64:     blkData.NamesInBlock[cat.ReceiverIndex],
@@ -972,6 +980,14 @@ func (cat *compressedActionTrace) CanonicalAt(blkData *blockData, glob uint64) C
 		ContractUint64:     blkData.NamesInBlock[cat.ContractNameIndex],
 		ActionUint64:       blkData.NamesInBlock[cat.ActionNameIndex],
 	}
+
+	if int(cat.TrxIDIndex) < len(blkData.TrxMetaInBlock) {
+		meta := &blkData.TrxMetaInBlock[cat.TrxIDIndex]
+		ca.CpuUsageUs = meta.CpuUsageUs
+		ca.NetUsageWords = meta.NetUsageWords
+	}
+
+	return ca
 }
 
 func catFromBytes(inBytes []byte) *compressedActionTrace {

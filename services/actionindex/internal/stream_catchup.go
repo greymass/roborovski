@@ -3,6 +3,7 @@ package internal
 import (
 	"context"
 	"encoding/hex"
+	"slices"
 
 	"github.com/greymass/roborovski/libraries/chain"
 	"github.com/greymass/roborovski/libraries/corereader"
@@ -113,7 +114,7 @@ func (c *StreamCatchup) streamWithContractActionIndex(ctx context.Context, sendA
 			end = len(allSeqs)
 		}
 
-		sent, err := c.processBatch(allSeqs[i:end], sendAction)
+		sent, err := c.processBatch(allSeqs[i:end], contract, nil, sendAction)
 		if err != nil {
 			return err
 		}
@@ -139,7 +140,7 @@ func (c *StreamCatchup) streamSingleAccount(ctx context.Context, account uint64,
 		batch = append(batch, seq)
 
 		if len(batch) >= StreamCatchupBatchSize {
-			sent, err := c.processBatch(batch, sendAction)
+			sent, err := c.processBatch(batch, account, nil, sendAction)
 			if err != nil {
 				return err
 			}
@@ -155,7 +156,7 @@ func (c *StreamCatchup) streamSingleAccount(ctx context.Context, account uint64,
 
 	// Process remaining batch
 	if len(batch) > 0 {
-		sent, err := c.processBatch(batch, sendAction)
+		sent, err := c.processBatch(batch, account, nil, sendAction)
 		if err != nil {
 			return err
 		}
@@ -167,19 +168,27 @@ func (c *StreamCatchup) streamSingleAccount(ctx context.Context, account uint64,
 }
 
 func (c *StreamCatchup) streamMultipleAccounts(ctx context.Context, accounts []uint64, sendAction func(StreamedAction) error) error {
+	seqToAccount := make(map[uint64]uint64)
 	var allSeqs []uint64
 	for _, account := range accounts {
 		seqs, err := c.indexes.chunkReader.GetWithSeqRange(account, c.startSeq, c.endSeq, unlimitedLimit, false)
 		if err != nil {
 			return err
 		}
-		allSeqs = mergeAndDedupe(allSeqs, seqs)
+		for _, seq := range seqs {
+			if _, ok := seqToAccount[seq]; !ok {
+				seqToAccount[seq] = account
+				allSeqs = append(allSeqs, seq)
+			}
+		}
 	}
 
 	if len(allSeqs) == 0 {
 		logger.Printf("stream", "Catchup: no sequences found for %d accounts", len(accounts))
 		return nil
 	}
+
+	slices.Sort(allSeqs)
 
 	logger.Printf("stream", "Catchup: %d merged sequences from %d accounts", len(allSeqs), len(accounts))
 
@@ -196,7 +205,7 @@ func (c *StreamCatchup) streamMultipleAccounts(ctx context.Context, accounts []u
 			end = len(allSeqs)
 		}
 
-		sent, err := c.processBatch(allSeqs[i:end], sendAction)
+		sent, err := c.processBatch(allSeqs[i:end], 0, seqToAccount, sendAction)
 		if err != nil {
 			return err
 		}
@@ -207,7 +216,7 @@ func (c *StreamCatchup) streamMultipleAccounts(ctx context.Context, accounts []u
 	return nil
 }
 
-func (c *StreamCatchup) processBatch(seqs []uint64, sendAction func(StreamedAction) error) (int, error) {
+func (c *StreamCatchup) processBatch(seqs []uint64, account uint64, seqToAccount map[uint64]uint64, sendAction func(StreamedAction) error) (int, error) {
 	actions, _, err := c.reader.GetActionsByGlobalSeqs(seqs)
 	if err != nil {
 		if len(seqs) == 1 {
@@ -215,7 +224,7 @@ func (c *StreamCatchup) processBatch(seqs []uint64, sendAction func(StreamedActi
 		}
 		sent := 0
 		for _, seq := range seqs {
-			n, err := c.processBatch([]uint64{seq}, sendAction)
+			n, err := c.processBatch([]uint64{seq}, account, seqToAccount, sendAction)
 			if err != nil {
 				return sent, err
 			}
@@ -225,17 +234,24 @@ func (c *StreamCatchup) processBatch(seqs []uint64, sendAction func(StreamedActi
 	}
 
 	sent := 0
+	var matchedViaBuf [1]uint64
 	for j, at := range actions {
+		matchedViaBuf[0] = account
+		if seqToAccount != nil {
+			matchedViaBuf[0] = seqToAccount[seqs[j]]
+		}
 		action := StreamedAction{
-			GlobalSeq: seqs[j],
-			BlockNum:  at.BlockNum,
-			BlockTime: chain.TimeToUint32(at.BlockTime),
-			Contract:  chain.StringToName(at.Act.Account),
-			Action:    chain.StringToName(at.Act.Name),
-			Receiver:  chain.StringToName(at.Receiver),
+			GlobalSeq:     seqs[j],
+			BlockNum:      at.BlockNum,
+			BlockTime:     chain.TimeToUint32(at.BlockTime),
+			Contract:      chain.StringToName(at.Act.Account),
+			Action:        chain.StringToName(at.Act.Name),
+			Receiver:      chain.StringToName(at.Receiver),
+			CpuUsageUs:    at.CpuUsageUs,
+			NetUsageWords: at.NetUsageWords,
 		}
 
-		if !c.filter.Matches(action) {
+		if !c.filter.Matches(action, matchedViaBuf[:]) {
 			continue
 		}
 

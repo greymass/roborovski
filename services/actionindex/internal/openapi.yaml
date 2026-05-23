@@ -13,6 +13,8 @@ tags:
     description: Account activity and action history
   - name: Legacy Account History
     description: v1 API endpoints for account history
+  - name: Actions
+    description: Direct action lookup by global sequence number
   - name: Debug
     description: Internal state inspection (requires --debug-endpoints)
 
@@ -242,6 +244,102 @@ paths:
               schema:
                 $ref: "#/components/schemas/AccountActivityErrorResponse"
 
+  /account/{account}/usage:
+    get:
+      operationId: getAccountUsage
+      summary: Get account resource usage
+      description: Retrieve network resource usage for an account's actions with cursor-based pagination. Results are grouped by transaction, with CPU/NET usage at the transaction level and individual actions with their RAM deltas nested within. Supports the same filtering parameters as /activity.
+      tags:
+        - Account History
+      parameters:
+        - name: account
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Account name
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 100
+            maximum: 1000
+          description: Max results (1-1000)
+        - name: order
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: ["asc", "desc"]
+            default: "desc"
+          description: Sort order
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Pagination cursor
+        - name: contract
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter by contract
+        - name: action
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter by action (requires contract)
+        - name: date
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+          description: Single date filter (YYYY-MM-DD)
+        - name: start_date
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+          description: Date range start (YYYY-MM-DD)
+        - name: end_date
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+          description: Date range end (YYYY-MM-DD)
+        - name: trace
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+          description: Include query timing trace
+      responses:
+        "200":
+          description: Usage entries found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountUsageResponse"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountActivityErrorResponse"
+        "503":
+          description: Service unavailable (syncing)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountActivityErrorResponse"
+
   /account/{account}/log:
     get:
       operationId: getAccountLog
@@ -378,6 +476,61 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AccountStatsErrorResponse"
+
+  /action/{seq}:
+    get:
+      operationId: getActionBySeq
+      summary: Get action by global sequence
+      description: Look up a single action by its global sequence number. Returns either a minimal action object or a full action trace.
+      tags:
+        - Actions
+      parameters:
+        - name: seq
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: uint64
+          description: Global sequence number
+        - name: trace
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+          description: Return full action trace instead of minimal action
+        - name: decode
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: true
+          description: Decode action data using ABI
+      responses:
+        "200":
+          description: Action found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActionLookupResponse"
+        "400":
+          description: Invalid sequence number
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountActivityErrorResponse"
+        "404":
+          description: Action not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountActivityErrorResponse"
+        "500":
+          description: Internal error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountActivityErrorResponse"
 
   /debug/account:
     get:
@@ -786,6 +939,52 @@ components:
             message:
               type: string
 
+    ActionLookupResponse:
+      type: object
+      description: Single action lookup result
+      required:
+        - global_action_seq
+        - block_num
+        - block_time
+        - trx_id
+      properties:
+        global_action_seq:
+          type: integer
+          format: uint64
+        block_num:
+          type: integer
+          format: uint32
+        block_time:
+          type: string
+        action:
+          type: object
+          description: Minimal action object (when trace=false)
+          properties:
+            account:
+              type: string
+            name:
+              type: string
+            authorization:
+              type: array
+              items:
+                type: object
+                properties:
+                  actor:
+                    type: string
+                  permission:
+                    type: string
+            data:
+              oneOf:
+                - type: object
+                - type: string
+            hex_data:
+              type: string
+        action_trace:
+          $ref: "#/components/schemas/ActionTrace"
+          description: Full action trace (when trace=true)
+        trx_id:
+          type: string
+
     ActionResult:
       type: object
       description: Action result for legacy get_actions endpoint
@@ -899,6 +1098,83 @@ components:
               type: string
             message:
               type: string
+
+    AccountUsageResponse:
+      type: object
+      required:
+        - results
+      properties:
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/UsageTransaction"
+        next_cursor:
+          type: string
+          description: Cursor for next page
+        prev_cursor:
+          type: string
+          description: Cursor for previous page
+        trace:
+          type: object
+          description: Query trace information (if requested)
+
+    UsageTransaction:
+      type: object
+      description: Resource usage grouped by transaction. CPU and NET are per-transaction values; all actions within the same transaction share them.
+      required:
+        - trx_id
+        - block_num
+        - block_time
+        - cpu_usage_us
+        - net_usage_words
+        - actions
+      properties:
+        trx_id:
+          type: string
+        block_num:
+          type: integer
+          format: uint32
+        block_time:
+          type: string
+        cpu_usage_us:
+          type: integer
+          format: uint32
+          description: CPU usage in microseconds (per transaction)
+        net_usage_words:
+          type: integer
+          format: uint32
+          description: Network usage in 8-byte words (per transaction)
+        actions:
+          type: array
+          items:
+            $ref: "#/components/schemas/UsageAction"
+
+    UsageAction:
+      type: object
+      description: Individual action within a transaction
+      required:
+        - global_action_seq
+        - contract
+        - action
+        - account_ram_deltas
+      properties:
+        global_action_seq:
+          type: integer
+          format: uint64
+        contract:
+          type: string
+        action:
+          type: string
+        account_ram_deltas:
+          type: array
+          items:
+            type: object
+            properties:
+              account:
+                type: string
+              delta:
+                type: integer
+                format: int64
 
     AccountLogResponse:
       type: object

@@ -3,10 +3,12 @@ package internal
 import (
 	"encoding/hex"
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/greymass/roborovski/libraries/chain"
 	"github.com/greymass/roborovski/libraries/corereader"
 	"github.com/greymass/roborovski/libraries/logger"
 )
@@ -298,16 +300,35 @@ func (p *AccountHistoryProcessor) broadcastActions(block corereader.Block) error
 		totalStart = time.Now()
 	}
 
+	type seqGroup struct {
+		firstIndex int
+		matchedVia []uint64
+	}
+	groups := make(map[uint64]*seqGroup, len(block.Actions))
+	seqOrder := make([]uint64, 0, len(block.Actions))
+	for i := range block.Actions {
+		a := &block.Actions[i]
+		g, exists := groups[a.GlobalSeq]
+		if !exists {
+			g = &seqGroup{firstIndex: i}
+			groups[a.GlobalSeq] = g
+			seqOrder = append(seqOrder, a.GlobalSeq)
+		}
+		g.matchedVia = append(g.matchedVia, a.Account)
+	}
+	slices.Sort(seqOrder)
+
 	var filterStart time.Time
 	if p.syncer.config.QueryTrace {
 		filterStart = time.Now()
 	}
 
-	var matchingActions []int
-	for i := range block.Actions {
-		a := &block.Actions[i]
-		if p.syncer.broadcaster.CouldMatch(a.Contract, a.Action, a.Account) {
-			matchingActions = append(matchingActions, i)
+	matchingSeqs := make([]uint64, 0, len(seqOrder))
+	for _, seq := range seqOrder {
+		g := groups[seq]
+		a := &block.Actions[g.firstIndex]
+		if p.syncer.broadcaster.CouldMatch(a.Contract, a.Action, g.matchedVia) {
+			matchingSeqs = append(matchingSeqs, seq)
 		}
 	}
 
@@ -316,17 +337,27 @@ func (p *AccountHistoryProcessor) broadcastActions(block corereader.Block) error
 		filterDur = time.Since(filterStart)
 	}
 
-	if len(matchingActions) == 0 {
+	if len(matchingSeqs) == 0 {
 		if p.syncer.config.QueryTrace {
-			logger.Printf("debug-stream", "block=%d actions=%d matched=0 subs=%d filter=%v",
-				block.BlockNum, len(block.Actions), subCount, filterDur)
+			logger.Printf("debug-stream", "block=%d actions=%d unique_seqs=%d matched=0 subs=%d filter=%v",
+				block.BlockNum, len(block.Actions), len(seqOrder), subCount, filterDur)
 		}
 		return nil
 	}
 
-	var dataStart time.Time
-	if p.syncer.config.QueryTrace {
-		dataStart = time.Now()
+	sendOne := func(seq uint64, g *seqGroup, data []byte, cpuUs, netWords uint32) bool {
+		a := &block.Actions[g.firstIndex]
+		return p.syncer.broadcaster.Broadcast(StreamedAction{
+			GlobalSeq:     seq,
+			BlockNum:      block.BlockNum,
+			BlockTime:     block.BlockTime,
+			Contract:      a.Contract,
+			Action:        a.Action,
+			Receiver:      a.Receiver,
+			ActionData:    data,
+			CpuUsageUs:    cpuUs,
+			NetUsageWords: netWords,
+		}, g.matchedVia)
 	}
 
 	var delivered int
@@ -334,48 +365,29 @@ func (p *AccountHistoryProcessor) broadcastActions(block corereader.Block) error
 	source := "inline"
 
 	if block.HasActionData() {
-		var dataDur time.Duration
-		if p.syncer.config.QueryTrace {
-			dataDur = time.Since(dataStart)
-		}
-
 		var sendStart time.Time
 		if p.syncer.config.QueryTrace {
 			sendStart = time.Now()
 		}
 
-		for _, idx := range matchingActions {
-			a := &block.Actions[idx]
-			actionData := block.GetActionDataBySeq(a.GlobalSeq)
-			if p.syncer.broadcaster.Broadcast(StreamedAction{
-				GlobalSeq:  a.GlobalSeq,
-				BlockNum:   block.BlockNum,
-				BlockTime:  block.BlockTime,
-				Contract:   a.Contract,
-				Action:     a.Action,
-				Receiver:   a.Account,
-				ActionData: actionData,
-			}) {
+		for _, seq := range matchingSeqs {
+			g := groups[seq]
+			data := block.GetActionDataBySeq(seq)
+			cpuUs, netWords := block.GetResourceUsage(seq)
+			if sendOne(seq, g, data, cpuUs, netWords) {
 				delivered++
 			}
 		}
 
 		if p.syncer.config.QueryTrace {
 			sendDur = time.Since(sendStart)
-			_ = dataDur
 		}
 	} else {
 		source = "fetched"
-		seqs := make([]uint64, len(matchingActions))
-		for i, idx := range matchingActions {
-			seqs[i] = block.Actions[idx].GlobalSeq
-		}
-
-		traces, _, err := p.syncer.reader.GetActionsByGlobalSeqs(seqs)
+		traces, _, err := p.fetchActionDataWithRetry(block.BlockNum, matchingSeqs)
 		if err != nil {
-			errMsg := fmt.Sprintf("failed to fetch action data for block %d: %v", block.BlockNum, err)
-			p.syncer.broadcaster.BroadcastError(ActionErrorDataInconsistent, errMsg)
-			return fmt.Errorf("%s", errMsg)
+			p.syncer.broadcaster.BroadcastError(ActionErrorDataInconsistent, err.Error())
+			return err
 		}
 
 		var sendStart time.Time
@@ -384,20 +396,12 @@ func (p *AccountHistoryProcessor) broadcastActions(block corereader.Block) error
 		}
 
 		for i, at := range traces {
-			idx := matchingActions[i]
-			var actionData []byte
+			seq := matchingSeqs[i]
+			var data []byte
 			if at.Act.Data != "" {
-				actionData, _ = hex.DecodeString(at.Act.Data)
+				data, _ = hex.DecodeString(at.Act.Data)
 			}
-			if p.syncer.broadcaster.Broadcast(StreamedAction{
-				GlobalSeq:  seqs[i],
-				BlockNum:   block.BlockNum,
-				BlockTime:  block.BlockTime,
-				Contract:   block.Actions[idx].Contract,
-				Action:     block.Actions[idx].Action,
-				Receiver:   block.Actions[idx].Account,
-				ActionData: actionData,
-			}) {
+			if sendOne(seq, groups[seq], data, at.CpuUsageUs, at.NetUsageWords) {
 				delivered++
 			}
 		}
@@ -409,11 +413,42 @@ func (p *AccountHistoryProcessor) broadcastActions(block corereader.Block) error
 
 	if p.syncer.config.QueryTrace {
 		totalDur := time.Since(totalStart)
-		logger.Printf("debug-stream", "block=%d actions=%d matched=%d delivered=%d subs=%d (%s) total=%v filter=%v send=%v",
-			block.BlockNum, len(block.Actions), len(matchingActions), delivered, subCount, source, totalDur, filterDur, sendDur)
+		logger.Printf("debug-stream", "block=%d actions=%d unique_seqs=%d matched=%d delivered=%d subs=%d (%s) total=%v filter=%v send=%v",
+			block.BlockNum, len(block.Actions), len(seqOrder), len(matchingSeqs), delivered, subCount, source, totalDur, filterDur, sendDur)
 	}
 
 	return nil
+}
+
+func (p *AccountHistoryProcessor) fetchActionDataWithRetry(blockNum uint32, seqs []uint64) ([]chain.ActionTrace, *corereader.FetchTimings, error) {
+	const maxAttempts = 10
+	const initialDelay = 200 * time.Millisecond
+
+	delay := initialDelay
+	start := time.Now()
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		traces, timings, err := p.syncer.reader.GetActionsByGlobalSeqs(seqs)
+		if err == nil {
+			if attempt > 1 {
+				logger.Printf("warning", "Fetched action data for block %d after %d attempts (%v elapsed)",
+					blockNum, attempt, time.Since(start))
+			}
+			return traces, timings, nil
+		}
+
+		if attempt == maxAttempts {
+			return nil, nil, fmt.Errorf("failed to fetch action data for block %d after %d attempts (%v elapsed): %v",
+				blockNum, maxAttempts, time.Since(start), err)
+		}
+
+		logger.Printf("warning", "Failed to fetch action data for block %d (attempt %d/%d), retrying in %v: %v",
+			blockNum, attempt, maxAttempts, delay, err)
+		time.Sleep(delay)
+		delay *= 2
+	}
+
+	return nil, nil, nil
 }
 
 func (p *AccountHistoryProcessor) ShouldCommit(blocksProcessed int) bool {

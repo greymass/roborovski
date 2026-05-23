@@ -322,6 +322,7 @@ func filterBlockInto(bf *blockFilter, notif RawBlock, actionFilter ActionFilterF
 					GlobalSeq:    globalSeq,
 					TrxIndex:     info.TrxIndex,
 					IsAuthorizer: isAuth,
+					Receiver:     info.Receiver,
 				})
 				if minSeq == 0 || globalSeq < minSeq {
 					minSeq = globalSeq
@@ -377,6 +378,7 @@ func filterBlockInto(bf *blockFilter, notif RawBlock, actionFilter ActionFilterF
 				GlobalSeq:    globalSeq,
 				TrxIndex:     info.TrxIndex,
 				IsAuthorizer: true,
+				Receiver:     info.Receiver,
 			})
 			if minSeq == 0 || globalSeq < minSeq {
 				minSeq = globalSeq
@@ -504,6 +506,7 @@ func filterBlockIntoTimed(bf *blockFilter, notif RawBlock, actionFilter ActionFi
 					GlobalSeq:    globalSeq,
 					TrxIndex:     info.TrxIndex,
 					IsAuthorizer: isAuth,
+					Receiver:     info.Receiver,
 				})
 				if minSeq == 0 || globalSeq < minSeq {
 					minSeq = globalSeq
@@ -562,6 +565,7 @@ func filterBlockIntoTimed(bf *blockFilter, notif RawBlock, actionFilter ActionFi
 				GlobalSeq:    globalSeq,
 				TrxIndex:     info.TrxIndex,
 				IsAuthorizer: true,
+				Receiver:     info.Receiver,
 			})
 			if minSeq == 0 || globalSeq < minSeq {
 				minSeq = globalSeq

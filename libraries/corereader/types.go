@@ -23,6 +23,8 @@ type CanonicalAction struct {
 	TrxIndex           uint32
 	ContractUint64     uint64
 	ActionUint64       uint64
+	CpuUsageUs         uint32
+	NetUsageWords      uint32
 }
 
 // RawBlock contains unfiltered block data as read from storage.
@@ -54,6 +56,13 @@ func (r *RawBlock) HasActionData() bool {
 	return r.rawData != nil
 }
 
+// SetActionData populates the raw action-data buffers (test helper).
+func (r *RawBlock) SetActionData(rawData []byte, offsets, lengths []uint32) {
+	r.rawData = rawData
+	r.dataOffsets = offsets
+	r.dataLengths = lengths
+}
+
 // Action represents a canonically-deduplicated action for a specific account.
 // This is the output of canonical filtering - one Action per (account, globalSeq) pair.
 type Action struct {
@@ -63,6 +72,7 @@ type Action struct {
 	GlobalSeq    uint64
 	TrxIndex     uint32
 	IsAuthorizer bool
+	Receiver     uint64 // chain receiver; differs from Account on authorizer-indexed entries
 }
 
 // ContractExecution represents a contract execution (receiver == contract).
@@ -105,6 +115,18 @@ func (b *Block) HasActionData() bool {
 
 func (b *Block) SetRawBlock(raw *RawBlock) {
 	b.rawBlock = raw
+}
+
+func (b *Block) GetResourceUsage(globalSeq uint64) (cpuUs, netWords uint32) {
+	if b.rawBlock == nil {
+		return 0, 0
+	}
+	for i := range b.rawBlock.Actions {
+		if b.rawBlock.Actions[i].GlobalSeqUint64 == globalSeq {
+			return b.rawBlock.Actions[i].CpuUsageUs, b.rawBlock.Actions[i].NetUsageWords
+		}
+	}
+	return 0, 0
 }
 
 func (b *Block) GetTransactionID(trxIndex uint32) [32]byte {

@@ -27,16 +27,17 @@ type BulkIndexer struct {
 	lastBlock   uint32
 	logInterval time.Duration
 
-	activeBuffer  []WALEntry
-	flushBuffer   []WALEntry
-	activeBuffNum int
-	flushBuffNum  int
-	flushMu       sync.Mutex
-	flushCond     *sync.Cond
-	flushPending  bool
-	flushPhase    string
-	flushErr      error
-	flushDone     chan struct{}
+	activeBuffer     []WALEntry
+	flushBuffer      []WALEntry
+	activeBuffNum    int
+	flushBuffNum     int
+	flushLastBlock   uint32
+	flushMu          sync.Mutex
+	flushCond        *sync.Cond
+	flushPending     bool
+	flushPhase       string
+	flushErr         error
+	flushDone        chan struct{}
 
 	timing *BulkSyncTiming
 }
@@ -134,6 +135,7 @@ func (b *BulkIndexer) swapAndFlush() error {
 
 	b.activeBuffer, b.flushBuffer = b.flushBuffer, b.activeBuffer
 	b.flushBuffNum = b.activeBuffNum
+	b.flushLastBlock = b.lastBlock
 	b.activeBuffNum++
 	b.flushPending = true
 	b.flushCond.Signal()
@@ -193,16 +195,17 @@ func (b *BulkIndexer) doFlush(buffer []WALEntry) error {
 
 	b.runCount++
 
-	b.idx.SetBulkProgress(b.runCount, b.lastBlock)
+	b.flushMu.Lock()
+	checkpointBlock := b.flushLastBlock
+	bufNum := b.flushBuffNum
+	b.flushMu.Unlock()
+
+	b.idx.SetBulkProgress(b.runCount, checkpointBlock)
 	if err := b.idx.SaveMeta(); err != nil {
 		logger.Printf("sync", "Warning: failed to save bulk progress: %v", err)
 	}
 
-	b.flushMu.Lock()
-	bufNum := b.flushBuffNum
-	b.flushMu.Unlock()
-
-	logger.Printf("sync", "Flushed buf %d with %s entries (checkpoint: block %s)", bufNum, logger.FormatCount(int64(len(buffer))), logger.FormatCount(int64(b.lastBlock)))
+	logger.Printf("sync", "Flushed buf %d with %s entries (checkpoint: block %s)", bufNum, logger.FormatCount(int64(len(buffer))), logger.FormatCount(int64(checkpointBlock)))
 	return nil
 }
 

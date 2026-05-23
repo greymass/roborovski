@@ -136,8 +136,8 @@ endef
 .PHONY: build/actionindex
 build/actionindex:
 	@if [ "$(call needs_rebuild,actionindex,services/actionindex)" = "1" ]; then \
-		echo "==> Building actionindex (CGO_ENABLED=0)"; \
-		CGO_ENABLED=0 go build -ldflags "-X main.Version=$(VERSION)" -o $(BINDIR)/actionindex ./services/actionindex/cmd/actionindex; \
+		echo "==> Building actionindex"; \
+		go build -ldflags "-X main.Version=$(VERSION)" -o $(BINDIR)/actionindex ./services/actionindex/cmd/actionindex; \
 	else \
 		echo "==> actionindex is up to date"; \
 	fi
@@ -145,8 +145,8 @@ build/actionindex:
 .PHONY: build/coreverify
 build/coreverify:
 	@if [ "$(call needs_rebuild,coreverify,services/coreverify)" = "1" ]; then \
-		echo "==> Building coreverify (CGO_ENABLED=0)"; \
-		CGO_ENABLED=0 go build -ldflags "-X main.Version=$(VERSION)" -o $(BINDIR)/coreverify ./services/coreverify/cmd/coreverify; \
+		echo "==> Building coreverify"; \
+		go build -ldflags "-X main.Version=$(VERSION)" -o $(BINDIR)/coreverify ./services/coreverify/cmd/coreverify; \
 	else \
 		echo "==> coreverify is up to date"; \
 	fi
@@ -154,8 +154,8 @@ build/coreverify:
 .PHONY: build/apiproxy
 build/apiproxy:
 	@if [ "$(call needs_rebuild,apiproxy,services/apiproxy)" = "1" ]; then \
-		echo "==> Building apiproxy (CGO_ENABLED=0)"; \
-		CGO_ENABLED=0 go build -ldflags "-X main.Version=$(VERSION)" -o $(BINDIR)/apiproxy ./services/apiproxy/cmd/apiproxy; \
+		echo "==> Building apiproxy"; \
+		go build -ldflags "-X main.Version=$(VERSION)" -o $(BINDIR)/apiproxy ./services/apiproxy/cmd/apiproxy; \
 	else \
 		echo "==> apiproxy is up to date"; \
 	fi
@@ -163,8 +163,8 @@ build/apiproxy:
 .PHONY: build/coreindex
 build/coreindex:
 	@if [ "$(call needs_rebuild,coreindex,services/coreindex)" = "1" ]; then \
-		echo "==> Building coreindex (CGO_ENABLED=0)"; \
-		CGO_ENABLED=0 go build -ldflags "-X main.Version=$(VERSION)" -o $(BINDIR)/coreindex ./services/coreindex/cmd/coreindex; \
+		echo "==> Building coreindex"; \
+		go build -ldflags "-X main.Version=$(VERSION)" -o $(BINDIR)/coreindex ./services/coreindex/cmd/coreindex; \
 	else \
 		echo "==> coreindex is up to date"; \
 	fi
@@ -172,8 +172,8 @@ build/coreindex:
 .PHONY: build/txindex
 build/txindex:
 	@if [ "$(call needs_rebuild,txindex,services/txindex)" = "1" ]; then \
-		echo "==> Building txindex (CGO_ENABLED=0)"; \
-		CGO_ENABLED=0 go build -ldflags "-X main.Version=$(VERSION)" -o $(BINDIR)/txindex ./services/txindex/cmd/txindex; \
+		echo "==> Building txindex"; \
+		go build -ldflags "-X main.Version=$(VERSION)" -o $(BINDIR)/txindex ./services/txindex/cmd/txindex; \
 	else \
 		echo "==> txindex is up to date"; \
 	fi
@@ -184,28 +184,28 @@ build/txindex:
 
 .PHONY: install/actionindex
 install/actionindex:
-	@echo "==> Installing actionindex (CGO_ENABLED=0)"
-	@CGO_ENABLED=0 go install ./services/actionindex/cmd/actionindex
+	@echo "==> Installing actionindex"
+	@go install ./services/actionindex/cmd/actionindex
 
 .PHONY: install/coreverify
 install/coreverify:
-	@echo "==> Installing coreverify (CGO_ENABLED=0)"
-	@CGO_ENABLED=0 go install ./services/coreverify/cmd/coreverify
+	@echo "==> Installing coreverify"
+	@go install ./services/coreverify/cmd/coreverify
 
 .PHONY: install/apiproxy
 install/apiproxy:
-	@echo "==> Installing apiproxy (CGO_ENABLED=0)"
-	@CGO_ENABLED=0 go install ./services/apiproxy/cmd/apiproxy
+	@echo "==> Installing apiproxy"
+	@go install ./services/apiproxy/cmd/apiproxy
 
 .PHONY: install/coreindex
 install/coreindex:
-	@echo "==> Installing coreindex (CGO_ENABLED=0)"
-	@CGO_ENABLED=0 go install ./services/coreindex/cmd/coreindex
+	@echo "==> Installing coreindex"
+	@go install ./services/coreindex/cmd/coreindex
 
 .PHONY: install/txindex
 install/txindex:
-	@echo "==> Installing txindex (CGO_ENABLED=0)"
-	@CGO_ENABLED=0 go install ./services/txindex/cmd/txindex
+	@echo "==> Installing txindex"
+	@go install ./services/txindex/cmd/txindex
 
 # =============================================================================
 # Release Targets

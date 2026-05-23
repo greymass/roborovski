@@ -20,13 +20,14 @@ type wsSubscribeMessage struct {
 	Type      string   `json:"type"`
 	Contracts []string `json:"contracts,omitempty"`
 	Receivers []string `json:"receivers,omitempty"`
-	StartSeq  uint64   `json:"start_seq,omitempty"`
+	Actions   []string `json:"actions,omitempty"`
+	StartSeq  uint64   `json:"start_seq,string,omitempty"`
 	Decode    *bool    `json:"decode,omitempty"`
 }
 
 type wsActionMessage struct {
 	Type      string         `json:"type"`
-	GlobalSeq uint64         `json:"global_seq"`
+	GlobalSeq uint64         `json:"global_seq,string"`
 	BlockNum  uint32         `json:"block_num"`
 	BlockTime uint32         `json:"block_time"`
 	Contract  string         `json:"contract"`
@@ -38,14 +39,14 @@ type wsActionMessage struct {
 
 type wsHeartbeatMessage struct {
 	Type    string `json:"type"`
-	HeadSeq uint64 `json:"head_seq"`
-	LibSeq  uint64 `json:"lib_seq"`
+	HeadSeq uint64 `json:"head_seq,string"`
+	LibSeq  uint64 `json:"lib_seq,string"`
 }
 
 type wsCatchupCompleteMessage struct {
 	Type    string `json:"type"`
-	HeadSeq uint64 `json:"head_seq"`
-	LibSeq  uint64 `json:"lib_seq"`
+	HeadSeq uint64 `json:"head_seq,string"`
+	LibSeq  uint64 `json:"lib_seq,string"`
 }
 
 type wsErrorMessage struct {
@@ -155,12 +156,16 @@ func (ws *StreamWebSocketServer) handleWebSocket(w http.ResponseWriter, r *http.
 	filter := ActionFilter{
 		Contracts: make(map[uint64]struct{}),
 		Receivers: make(map[uint64]struct{}),
+		Actions:   make(map[uint64]struct{}),
 	}
 	for _, c := range subMsg.Contracts {
 		filter.Contracts[chain.StringToName(c)] = struct{}{}
 	}
 	for _, r := range subMsg.Receivers {
 		filter.Receivers[chain.StringToName(r)] = struct{}{}
+	}
+	for _, a := range subMsg.Actions {
+		filter.Actions[chain.StringToName(a)] = struct{}{}
 	}
 
 	decode := true
@@ -240,7 +245,7 @@ func (ws *StreamWebSocketServer) recvLoop(ctx context.Context, wsc *wsStreamClie
 		switch baseMsg.Type {
 		case "ack":
 			var ack struct {
-				Seq uint64 `json:"seq"`
+				Seq uint64 `json:"seq,string"`
 			}
 			if err := json.Unmarshal(msg, &ack); err == nil && wsc.client.sub != nil {
 				wsc.client.sub.Ack(ack.Seq)

@@ -11,7 +11,7 @@ type ActionFilter struct {
 	Actions   map[uint64]struct{}
 }
 
-func (f *ActionFilter) Matches(action StreamedAction) bool {
+func (f *ActionFilter) Matches(action StreamedAction, matchedVia []uint64) bool {
 	if len(f.Contracts) == 0 && len(f.Receivers) == 0 {
 		return false
 	}
@@ -34,12 +34,23 @@ func (f *ActionFilter) Matches(action StreamedAction) bool {
 		return contractMatch
 	}
 
-	_, receiverMatch := f.Receivers[action.Receiver]
+	receiverMatch := anyInSet(matchedVia, f.Receivers)
+
 	if len(f.Contracts) == 0 {
 		return receiverMatch
 	}
 
 	return contractMatch && receiverMatch
+}
+
+// anyInSet reports whether any element of keys is a key of m.
+func anyInSet(keys []uint64, m map[uint64]struct{}) bool {
+	for _, k := range keys {
+		if _, ok := m[k]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 type StreamError struct {
