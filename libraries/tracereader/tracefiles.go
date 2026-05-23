@@ -148,8 +148,12 @@ func GetRawBlocksWithMetadata(blockNum uint32, limit int, conf *Config) ([]RawBl
 	}
 	defer sliceIndex.Close()
 
-	var found bool = false
-	var offsets []uint64 = make([]uint64, 0)
+	type blockIdxEntry struct {
+		number uint32
+		offset uint64
+	}
+	var blockEntries []blockIdxEntry
+	latestIdx := make(map[uint32]int)
 
 	var entry IndexEntryVariant
 	dec := chain.NewDecoder(sliceIndex)
@@ -161,32 +165,17 @@ func GetRawBlocksWithMetadata(blockNum uint32, limit int, conf *Config) ([]RawBl
 			}
 			return nil, err
 		}
-
-		if entry.Block != nil && entry.Block.Number >= blockNum {
-			if entry.Block.Number == blockNum {
-				found = true
-			}
-			offsets = append(offsets, entry.Block.Offset)
-			if limit > 0 && len(offsets) >= limit {
-				err = dec.DecodeVariant(&entry)
-				if err != io.EOF && entry.Block != nil {
-					offsets = append(offsets, entry.Block.Offset)
-				}
-				break
-			}
+		if entry.Block != nil {
+			blockEntries = append(blockEntries, blockIdxEntry{
+				number: entry.Block.Number,
+				offset: entry.Block.Offset,
+			})
+			latestIdx[entry.Block.Number] = len(blockEntries) - 1
 		}
 	}
 
-	if !found {
+	if _, ok := latestIdx[blockNum]; !ok {
 		return nil, ErrNotFound
-	}
-
-	numBlocks := limit
-	if limit <= 0 || len(offsets) < limit {
-		numBlocks = len(offsets)
-		if numBlocks > 0 {
-			numBlocks--
-		}
 	}
 
 	slice, err := os.OpenFile(fmt.Sprintf("%s/trace_%s.log", conf.Dir, stride), os.O_RDONLY, 0)
@@ -201,49 +190,50 @@ func GetRawBlocksWithMetadata(blockNum uint32, limit int, conf *Config) ([]RawBl
 	}
 	traceFileSize := sliceInfo.Size()
 
-	rawBlocks := make([]RawBlockData, numBlocks)
-
-	for i := 0; i < numBlocks; i++ {
+	var rawBlocks []RawBlockData
+	for k := uint32(0); limit <= 0 || k < uint32(limit); k++ {
+		bn := blockNum + k
+		idx, ok := latestIdx[bn]
+		if !ok {
+			break
+		}
+		offset := blockEntries[idx].offset
 		var blockSize uint64
-		if i+1 < len(offsets) {
-			blockSize = offsets[i+1] - offsets[i]
+		if idx+1 < len(blockEntries) {
+			blockSize = blockEntries[idx+1].offset - offset
 		} else {
-			blockSize = uint64(traceFileSize) - offsets[i]
+			blockSize = uint64(traceFileSize) - offset
 		}
 
-		currentBlockNum := blockNum + uint32(i)
-
-		if int64(offsets[i]) >= traceFileSize {
+		if int64(offset) >= traceFileSize {
 			return nil, fmt.Errorf("block %d: offset %d exceeds trace file size %d (stride=%s)",
-				currentBlockNum, offsets[i], traceFileSize, stride)
+				bn, offset, traceFileSize, stride)
 		}
 
-		if int64(offsets[i]+blockSize) > traceFileSize {
-			actualAvailable := traceFileSize - int64(offsets[i])
+		if int64(offset+blockSize) > traceFileSize {
+			actualAvailable := traceFileSize - int64(offset)
 			return nil, fmt.Errorf("block %d: expected %d bytes at offset %d but only %d bytes available in trace file (size=%d, stride=%s)",
-				currentBlockNum, blockSize, offsets[i], actualAvailable, traceFileSize, stride)
+				bn, blockSize, offset, actualAvailable, traceFileSize, stride)
 		}
 
-		_, err = slice.Seek(int64(offsets[i]), io.SeekStart)
-		if err != nil {
-			return nil, fmt.Errorf("failed to seek to block %d offset %d: %w", currentBlockNum, offsets[i], err)
+		if _, err := slice.Seek(int64(offset), io.SeekStart); err != nil {
+			return nil, fmt.Errorf("failed to seek to block %d offset %d: %w", bn, offset, err)
 		}
 
 		rawBytes := make([]byte, blockSize)
 		n, err := slice.Read(rawBytes)
 		if err != nil && err != io.EOF {
-			return nil, fmt.Errorf("failed to read raw bytes for block %d: %w", currentBlockNum, err)
+			return nil, fmt.Errorf("failed to read raw bytes for block %d: %w", bn, err)
 		}
-
 		if uint64(n) != blockSize {
 			return nil, fmt.Errorf("block %d: read %d bytes but expected %d (offset=%d, fileSize=%d, stride=%s)",
-				currentBlockNum, n, blockSize, offsets[i], traceFileSize, stride)
+				bn, n, blockSize, offset, traceFileSize, stride)
 		}
 
-		rawBlocks[i] = RawBlockData{
-			BlockNum: currentBlockNum,
+		rawBlocks = append(rawBlocks, RawBlockData{
+			BlockNum: bn,
 			RawBytes: rawBytes,
-		}
+		})
 	}
 
 	return rawBlocks, nil
