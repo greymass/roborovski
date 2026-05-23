@@ -30,12 +30,40 @@ func putDecoder(d *zstd.Decoder) {
 	decoderPool.Put(d)
 }
 
-func ZstdCompressLevel(dst, src []byte, level int) ([]byte, error) {
-	enc, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.EncoderLevelFromZstd(level)))
+var (
+	encoderMu    sync.RWMutex
+	encoderCache = map[int]*zstd.Encoder{}
+)
+
+func getEncoder(level int) (*zstd.Encoder, error) {
+	encoderMu.RLock()
+	enc, ok := encoderCache[level]
+	encoderMu.RUnlock()
+	if ok {
+		return enc, nil
+	}
+
+	encoderMu.Lock()
+	defer encoderMu.Unlock()
+	if enc, ok = encoderCache[level]; ok {
+		return enc, nil
+	}
+	enc, err := zstd.NewWriter(nil,
+		zstd.WithEncoderLevel(zstd.EncoderLevelFromZstd(level)),
+		zstd.WithEncoderConcurrency(1),
+	)
 	if err != nil {
 		return nil, err
 	}
-	defer enc.Close()
+	encoderCache[level] = enc
+	return enc, nil
+}
+
+func ZstdCompressLevel(dst, src []byte, level int) ([]byte, error) {
+	enc, err := getEncoder(level)
+	if err != nil {
+		return nil, err
+	}
 	return enc.EncodeAll(src, dst[:0]), nil
 }
 
