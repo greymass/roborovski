@@ -28,7 +28,7 @@ func TestNewClient(t *testing.T) {
 func TestDecodeAction(t *testing.T) {
 	client := NewClient("localhost:9411", Filter{}, 0, DefaultClientConfig())
 
-	payload := make([]byte, 48)
+	payload := make([]byte, 60)
 	binary.LittleEndian.PutUint64(payload[0:8], 12345)
 	binary.LittleEndian.PutUint32(payload[8:12], 1000)
 	binary.LittleEndian.PutUint32(payload[12:16], 1700000000)
@@ -37,6 +37,9 @@ func TestDecodeAction(t *testing.T) {
 	binary.LittleEndian.PutUint64(payload[32:40], 0x5530EA033C80A555)
 	binary.LittleEndian.PutUint32(payload[40:44], 500)
 	binary.LittleEndian.PutUint32(payload[44:48], 20)
+	binary.LittleEndian.PutUint32(payload[48:52], 0)
+	binary.LittleEndian.PutUint32(payload[52:56], 0)
+	binary.LittleEndian.PutUint32(payload[56:60], 0)
 
 	action, err := client.decodeAction(payload)
 	if err != nil {
@@ -63,7 +66,7 @@ func TestDecodeAction(t *testing.T) {
 func TestDecodeActionWithData(t *testing.T) {
 	client := NewClient("localhost:9411", Filter{}, 0, DefaultClientConfig())
 
-	payload := make([]byte, 56)
+	payload := make([]byte, 68)
 	binary.LittleEndian.PutUint64(payload[0:8], 100)
 	binary.LittleEndian.PutUint32(payload[8:12], 500)
 	binary.LittleEndian.PutUint32(payload[12:16], 1600000000)
@@ -72,7 +75,10 @@ func TestDecodeActionWithData(t *testing.T) {
 	binary.LittleEndian.PutUint64(payload[32:40], 0)
 	binary.LittleEndian.PutUint32(payload[40:44], 0)
 	binary.LittleEndian.PutUint32(payload[44:48], 0)
-	copy(payload[48:], []byte("testdata"))
+	binary.LittleEndian.PutUint32(payload[48:52], 0)
+	binary.LittleEndian.PutUint32(payload[52:56], 0)
+	binary.LittleEndian.PutUint32(payload[56:60], 0)
+	copy(payload[60:], []byte("testdata"))
 
 	action, err := client.decodeAction(payload)
 	if err != nil {
@@ -87,10 +93,41 @@ func TestDecodeActionWithData(t *testing.T) {
 func TestDecodeActionTooShort(t *testing.T) {
 	client := NewClient("localhost:9411", Filter{}, 0, DefaultClientConfig())
 
-	payload := make([]byte, 30)
+	payload := make([]byte, 48)
 	_, err := client.decodeAction(payload)
 	if err == nil {
-		t.Error("expected error for short payload")
+		t.Error("expected error for payload shorter than 60 bytes")
+	}
+}
+
+func TestDecodeActionOrdinals(t *testing.T) {
+	client := NewClient("localhost:9411", Filter{}, 0, DefaultClientConfig())
+
+	build := func(ao, creator, closest uint32) []byte {
+		p := make([]byte, 60)
+		binary.LittleEndian.PutUint64(p[0:8], 7)
+		binary.LittleEndian.PutUint32(p[48:52], ao)
+		binary.LittleEndian.PutUint32(p[52:56], creator)
+		binary.LittleEndian.PutUint32(p[56:60], closest)
+		return p
+	}
+
+	topLevel, err := client.decodeAction(build(1, 0, 0))
+	if err != nil {
+		t.Fatalf("decodeAction (top-level) failed: %v", err)
+	}
+	if topLevel.ActionOrdinal != 1 || topLevel.CreatorActionOrdinal != 0 || topLevel.ClosestUnnotifiedAncestorActionOrdinal != 0 {
+		t.Errorf("top-level ordinals = (%d,%d,%d), want (1,0,0)",
+			topLevel.ActionOrdinal, topLevel.CreatorActionOrdinal, topLevel.ClosestUnnotifiedAncestorActionOrdinal)
+	}
+
+	inline, err := client.decodeAction(build(3, 1, 1))
+	if err != nil {
+		t.Fatalf("decodeAction (inline) failed: %v", err)
+	}
+	if inline.ActionOrdinal != 3 || inline.CreatorActionOrdinal != 1 || inline.ClosestUnnotifiedAncestorActionOrdinal != 1 {
+		t.Errorf("inline ordinals = (%d,%d,%d), want (3,1,1)",
+			inline.ActionOrdinal, inline.CreatorActionOrdinal, inline.ClosestUnnotifiedAncestorActionOrdinal)
 	}
 }
 
@@ -644,7 +681,7 @@ func TestDialReceivesBatch(t *testing.T) {
 		payload := make([]byte, length-1)
 		conn.Read(payload)
 
-		actionPayload := make([]byte, 48)
+		actionPayload := make([]byte, 60)
 		binary.LittleEndian.PutUint64(actionPayload[0:8], 999)
 		binary.LittleEndian.PutUint32(actionPayload[8:12], 100)
 		binary.LittleEndian.PutUint32(actionPayload[12:16], 1700000000)
@@ -832,7 +869,7 @@ func TestRecvLoopReceivesActions(t *testing.T) {
 		close(serverReady)
 
 		for i := uint64(0); i < 3; i++ {
-			actionPayload := make([]byte, 48)
+			actionPayload := make([]byte, 60)
 			binary.LittleEndian.PutUint64(actionPayload[0:8], 1000+i)
 			binary.LittleEndian.PutUint32(actionPayload[8:12], uint32(100+i))
 			binary.LittleEndian.PutUint32(actionPayload[12:16], 1700000000)

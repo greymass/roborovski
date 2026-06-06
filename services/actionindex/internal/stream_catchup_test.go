@@ -9,8 +9,8 @@ import (
 
 type stubBaseReader struct {
 	corereader.BaseReader
-	traces   []chain.ActionTrace
-	bySeq    map[uint64]chain.ActionTrace
+	traces []chain.ActionTrace
+	bySeq  map[uint64]chain.ActionTrace
 }
 
 func (s *stubBaseReader) GetActionsByGlobalSeqs(seqs []uint64) ([]chain.ActionTrace, *corereader.FetchTimings, error) {
@@ -111,6 +111,45 @@ func TestProcessBatch_DeliversReceiverPathAction(t *testing.T) {
 	if got.Receiver != chain.StringToName(transferTrace.Receiver) {
 		t.Errorf("Receiver = %s, want %s (chain receiver)",
 			chain.NameToString(got.Receiver), transferTrace.Receiver)
+	}
+}
+
+func TestProcessBatch_CarriesOrdinals(t *testing.T) {
+	tracked := chain.StringToName("shipload.gm")
+
+	trace := chain.ActionTrace{
+		ActionOrdinal: 3,
+		CreatorAO:     1,
+		ClosestUAAO:   1,
+		Receiver:      "shipload.gm",
+		Act: chain.Action{
+			Account: "shipload.gm",
+			Name:    "consume",
+		},
+	}
+
+	catchup := &StreamCatchup{
+		reader: &stubBaseReader{traces: []chain.ActionTrace{trace}},
+		filter: ActionFilter{
+			Receivers: map[uint64]struct{}{tracked: {}},
+		},
+	}
+
+	var delivered []StreamedAction
+	sent, err := catchup.processBatch([]uint64{900}, tracked, nil, func(a StreamedAction) error {
+		delivered = append(delivered, a)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("processBatch error: %v", err)
+	}
+	if sent != 1 || len(delivered) != 1 {
+		t.Fatalf("expected 1 delivery, got sent=%d delivered=%d", sent, len(delivered))
+	}
+	got := delivered[0]
+	if got.ActionOrdinal != 3 || got.CreatorActionOrdinal != 1 || got.ClosestUnnotifiedAncestorActionOrdinal != 1 {
+		t.Errorf("ordinals = (%d,%d,%d), want (3,1,1)",
+			got.ActionOrdinal, got.CreatorActionOrdinal, got.ClosestUnnotifiedAncestorActionOrdinal)
 	}
 }
 

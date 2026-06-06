@@ -241,14 +241,17 @@ func (c *StreamCatchup) processBatch(seqs []uint64, account uint64, seqToAccount
 			matchedViaBuf[0] = seqToAccount[seqs[j]]
 		}
 		action := StreamedAction{
-			GlobalSeq:     seqs[j],
-			BlockNum:      at.BlockNum,
-			BlockTime:     chain.TimeToUint32(at.BlockTime),
-			Contract:      chain.StringToName(at.Act.Account),
-			Action:        chain.StringToName(at.Act.Name),
-			Receiver:      chain.StringToName(at.Receiver),
-			CpuUsageUs:    at.CpuUsageUs,
-			NetUsageWords: at.NetUsageWords,
+			GlobalSeq:                              seqs[j],
+			BlockNum:                               at.BlockNum,
+			BlockTime:                              chain.TimeToUint32(at.BlockTime),
+			Contract:                               chain.StringToName(at.Act.Account),
+			Action:                                 chain.StringToName(at.Act.Name),
+			Receiver:                               chain.StringToName(at.Receiver),
+			CpuUsageUs:                             at.CpuUsageUs,
+			NetUsageWords:                          at.NetUsageWords,
+			ActionOrdinal:                          at.ActionOrdinal,
+			CreatorActionOrdinal:                   at.CreatorAO,
+			ClosestUnnotifiedAncestorActionOrdinal: at.ClosestUAAO,
 		}
 
 		if !c.filter.Matches(action, matchedViaBuf[:]) {

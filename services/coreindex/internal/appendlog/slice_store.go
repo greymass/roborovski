@@ -13,6 +13,8 @@ import (
 	"github.com/greymass/roborovski/libraries/logger"
 )
 
+var ErrNonContiguousWrite = errors.New("non-contiguous block write")
+
 // SliceStore manages append-only log files with tiered slice-based storage
 // This is the production implementation for large datasets (400M+ blocks)
 // Memory usage stays bounded regardless of dataset size.
@@ -198,6 +200,10 @@ func NewSliceStore(basePath string, opts SliceStoreOptions) (*SliceStore, error)
 func (s *SliceStore) AppendBlock(blockNum uint32, data []byte, globMin, globMax uint64, liveMode bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if s.head != 0 && blockNum != s.head+1 {
+		return fmt.Errorf("%w: expected block %d, got %d", ErrNonContiguousWrite, s.head+1, blockNum)
+	}
 
 	// Compress data if enabled
 	dataToWrite := data
@@ -572,6 +578,14 @@ func (s *SliceStore) AppendBlockBatch(blocks []BlockEntry) error {
 	s.mu.Lock()
 	lockWaitTime := time.Since(batchStart)
 	defer s.mu.Unlock()
+
+	prev := s.head
+	for i := range blocks {
+		if prev != 0 && blocks[i].BlockNum != prev+1 {
+			return fmt.Errorf("%w: expected block %d, got %d", ErrNonContiguousWrite, prev+1, blocks[i].BlockNum)
+		}
+		prev = blocks[i].BlockNum
+	}
 
 	// Process blocks sequentially, handling rotations as needed
 	var currentSlice *Slice

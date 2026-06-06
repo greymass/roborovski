@@ -17,6 +17,7 @@ import (
 const HeaderVersion uint32 = 1
 
 var ErrNotFound = errors.New("not found")
+var ErrIncompleteData = errors.New("incomplete trace data")
 
 type Config struct {
 	Debug  bool
@@ -160,7 +161,7 @@ func GetRawBlocksWithMetadata(blockNum uint32, limit int, conf *Config) ([]RawBl
 	for {
 		err = dec.DecodeVariant(&entry)
 		if err != nil {
-			if err == io.EOF {
+			if err == io.EOF || errors.Is(err, io.ErrUnexpectedEOF) {
 				break
 			}
 			return nil, err
@@ -206,14 +207,14 @@ func GetRawBlocksWithMetadata(blockNum uint32, limit int, conf *Config) ([]RawBl
 		}
 
 		if int64(offset) >= traceFileSize {
-			return nil, fmt.Errorf("block %d: offset %d exceeds trace file size %d (stride=%s)",
-				bn, offset, traceFileSize, stride)
+			return nil, fmt.Errorf("block %d: offset %d exceeds trace file size %d (stride=%s): %w",
+				bn, offset, traceFileSize, stride, ErrIncompleteData)
 		}
 
 		if int64(offset+blockSize) > traceFileSize {
 			actualAvailable := traceFileSize - int64(offset)
-			return nil, fmt.Errorf("block %d: expected %d bytes at offset %d but only %d bytes available in trace file (size=%d, stride=%s)",
-				bn, blockSize, offset, actualAvailable, traceFileSize, stride)
+			return nil, fmt.Errorf("block %d: expected %d bytes at offset %d but only %d bytes available in trace file (size=%d, stride=%s): %w",
+				bn, blockSize, offset, actualAvailable, traceFileSize, stride, ErrIncompleteData)
 		}
 
 		if _, err := slice.Seek(int64(offset), io.SeekStart); err != nil {
@@ -226,8 +227,8 @@ func GetRawBlocksWithMetadata(blockNum uint32, limit int, conf *Config) ([]RawBl
 			return nil, fmt.Errorf("failed to read raw bytes for block %d: %w", bn, err)
 		}
 		if uint64(n) != blockSize {
-			return nil, fmt.Errorf("block %d: read %d bytes but expected %d (offset=%d, fileSize=%d, stride=%s)",
-				bn, n, blockSize, offset, traceFileSize, stride)
+			return nil, fmt.Errorf("block %d: read %d bytes but expected %d (offset=%d, fileSize=%d, stride=%s): %w",
+				bn, n, blockSize, offset, traceFileSize, stride, ErrIncompleteData)
 		}
 
 		rawBlocks = append(rawBlocks, RawBlockData{
@@ -367,7 +368,7 @@ func GetInfo(conf *Config) (GetInfoResponse, error) {
 	for {
 		err = dec.DecodeVariant(&entry)
 		if err != nil {
-			if err == io.EOF {
+			if err == io.EOF || errors.Is(err, io.ErrUnexpectedEOF) {
 				break
 			}
 			return rv, err
@@ -403,6 +404,10 @@ func openSliceIndex(filename string, conf *Config) (*os.File, error) {
 	var version uint32
 	err = binary.Read(f, binary.LittleEndian, &version)
 	if err != nil {
+		if err == io.EOF || errors.Is(err, io.ErrUnexpectedEOF) {
+			f.Close()
+			return nil, ErrNotFound
+		}
 		return nil, err
 	}
 

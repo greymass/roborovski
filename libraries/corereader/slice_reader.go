@@ -137,7 +137,6 @@ func (sm *SharedSliceMetadata) markSliceFinalized(idx int) {
 	}
 }
 
-
 // findSliceForGlob finds the slice containing the given global sequence using binary search.
 // Returns the slice info and index, or nil/-1 if not found.
 func (sm *SharedSliceMetadata) findSliceForGlob(glob uint64) (*SliceInfo, int) {
@@ -366,17 +365,17 @@ type SliceInfo struct {
 }
 
 type sliceReader struct {
-	sliceNum         uint32
-	basePath         string
-	blockIndex       map[uint32]blockIndexEntry
-	minBlock         uint32 // Cached minimum block number from blockIndex
-	blockFile        *os.File
-	mmapData         []byte
-	header           *DataLogHeader
-	loaded           bool
-	mu               sync.RWMutex
-	refCount         atomic.Int32
-	mmapWaitTimeout  time.Duration // Max time to wait for data file growth (0 = use default 30s)
+	sliceNum        uint32
+	basePath        string
+	blockIndex      map[uint32]blockIndexEntry
+	minBlock        uint32 // Cached minimum block number from blockIndex
+	blockFile       *os.File
+	mmapData        []byte
+	header          *DataLogHeader
+	loaded          bool
+	mu              sync.RWMutex
+	refCount        atomic.Int32
+	mmapWaitTimeout time.Duration // Max time to wait for data file growth (0 = use default 30s)
 }
 
 type SliceGlobRange struct {
@@ -3650,6 +3649,7 @@ func parseBlockWithCanonical(blockData []byte, filterFunc ActionFilterFunc) (map
 		action := CanonicalAction{
 			ActionOrdinal:      act.ActionOrdinal,
 			CreatorAO:          act.CreatorAO,
+			ClosestUAAO:        act.ClosestUAAO,
 			ReceiverUint64:     blob.Block.NamesInBlock[act.ReceiverIndex],
 			DataIndex:          act.DataIndex,
 			AuthAccountIndexes: authSlice,

@@ -6,8 +6,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"log"
 	"fmt"
+	"log"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
@@ -136,11 +136,13 @@ type writeBatch struct {
 }
 
 type processedStride struct {
-	strideNum   uint32
-	strideStart uint32
-	strideEnd   uint32
-	blocks      []appendlog.BlockEntry // All blocks in stride, in order
-	abis        []abiEntry             // ABIs extracted from setabi actions
+	strideNum      uint32
+	strideStart    uint32
+	strideEnd      uint32
+	blocks         []appendlog.BlockEntry
+	abis           []abiEntry
+	incompleteFrom uint32
+	readErr        error
 }
 
 type abiEntry struct {
@@ -561,6 +563,9 @@ func isSliceError(err error) bool {
 	if err == nil {
 		return false
 	}
+	if errors.Is(err, appendlog.ErrNonContiguousWrite) {
+		return false
+	}
 	errStr := err.Error()
 	slicePatterns := []string{
 		"block count mismatch",
@@ -671,6 +676,7 @@ func syncFromTraceFiles(config *server.Config, traceConfig *tracereader.Config, 
 
 	batch := make([]appendlog.BlockEntry, 0, batchSize)
 	var sliceErr error
+	var readErr error
 
 	flushBatch := func() error {
 		if len(batch) == 0 {
@@ -789,6 +795,14 @@ func syncFromTraceFiles(config *server.Config, traceConfig *tracereader.Config, 
 		return nil
 	}
 
+	classifyTip := func(ps *processedStride) bool {
+		if ps.incompleteFrom != 0 || ps.readErr != nil {
+			readErr = classifyStrideTail(ps, end)
+			return true
+		}
+		return false
+	}
+
 	// Main loop: receive strides, reorder, write blocks
 mainLoop:
 	for !(*exit) && nextStrideNum <= endStride {
@@ -804,8 +818,14 @@ mainLoop:
 				logger.Error("Failed to write stride %d: %v", nextStrideNum, err)
 				if isSliceError(err) {
 					sliceErr = err
+				} else {
+					readErr = err
 				}
 				*exit = true
+				break mainLoop
+			}
+
+			if classifyTip(ps) {
 				break mainLoop
 			}
 
@@ -897,7 +917,7 @@ mainLoop:
 	}
 
 	// Process any remaining pending strides in order
-	for nextStrideNum <= endStride && !(*exit) {
+	for nextStrideNum <= endStride && !(*exit) && readErr == nil {
 		ps, ok := pendingStrides[nextStrideNum]
 		if !ok {
 			// Stride not available yet - drain from channel
@@ -917,7 +937,12 @@ mainLoop:
 			logger.Error("Failed to write stride %d: %v", nextStrideNum, err)
 			if isSliceError(err) {
 				sliceErr = err
+			} else {
+				readErr = err
 			}
+			break
+		}
+		if classifyTip(ps) {
 			break
 		}
 		nextStrideNum++
@@ -958,6 +983,9 @@ mainLoop:
 		logger.Println("debug-shutdown", "Async writer finished")
 	}
 
+	if readErr != nil {
+		return readErr
+	}
 	return sliceErr
 }
 
@@ -1119,10 +1147,19 @@ func gophers(config *server.Config, traceConfig *tracereader.Config, strideChan 
 					break
 				}
 
-				// Check for I/O errors
 				if prefetched.err != nil {
-					logger.Fatal("Failed to read trace files for blocks %d-%d: %v (sync requires complete trace files)",
-						prefetched.strideStart, prefetched.strideEnd, prefetched.err)
+					select {
+					case strideChan <- &processedStride{
+						strideNum:      prefetched.strideNum,
+						strideStart:    prefetched.strideStart,
+						strideEnd:      prefetched.strideEnd,
+						incompleteFrom: prefetched.strideStart,
+						readErr:        prefetched.err,
+					}:
+					case <-exitChan:
+						return
+					}
+					continue
 				}
 
 				// Track stride being processed by this worker
@@ -1153,6 +1190,7 @@ func gophers(config *server.Config, traceConfig *tracereader.Config, strideChan 
 
 				// Accumulate all blocks in stride for single output
 				strideBlocks := make([]appendlog.BlockEntry, 0, expectedBlocks)
+				incompleteFrom := uint32(0)
 				var strideABIs []abiEntry
 				exitRequested := false
 
@@ -1163,14 +1201,9 @@ func gophers(config *server.Config, traceConfig *tracereader.Config, strideChan 
 						break
 					}
 
-					// Check if this block has trace data available
 					if idx >= len(rawBlocks) {
-						// Block is missing - append marker entry (nil data)
-						strideBlocks = append(strideBlocks, appendlog.BlockEntry{
-							BlockNum: blockNum,
-							Data:     nil, // Marker for missing block
-						})
-						continue
+						incompleteFrom = blockNum
+						break
 					}
 
 					// INSTRUMENTATION: Time block processing
@@ -1286,16 +1319,16 @@ func gophers(config *server.Config, traceConfig *tracereader.Config, strideChan 
 					atomic.AddInt64(&workerStrideTimeNs[i], time.Since(strideProcessStart).Nanoseconds())
 				}
 
-				// Send completed stride (unless exit requested)
-				if !exitRequested && len(strideBlocks) > 0 {
+				if !exitRequested && (len(strideBlocks) > 0 || incompleteFrom != 0) {
 					t2 := time.Now()
 					select {
 					case strideChan <- &processedStride{
-						strideNum:   prefetched.strideNum,
-						strideStart: strideStart,
-						strideEnd:   strideEnd,
-						blocks:      strideBlocks,
-						abis:        strideABIs,
+						strideNum:      prefetched.strideNum,
+						strideStart:    strideStart,
+						strideEnd:      strideEnd,
+						blocks:         strideBlocks,
+						abis:           strideABIs,
+						incompleteFrom: incompleteFrom,
 					}:
 						atomic.AddInt64(&totalChanSendNs, time.Since(t2).Nanoseconds())
 					case <-exitChan:
@@ -2399,10 +2432,11 @@ func main() {
 	// Check for new blocks every 500ms (EOS block interval)
 	syncWaitStart := time.Now()
 	liveSyncAnnounced := false // Track if we've announced live sync mode
-	monitoringModeAnnounced := false        // Track if we've announced monitoring mode
-	lastMonitoringLog := time.Time{}        // Track last monitoring heartbeat
-	lastStoreAheadLog := time.Time{}        // Track last "store ahead" warning
-	lastMediumBatchLog := time.Time{}       // Track last medium batch log (rate limit)
+	var stalls stallTracker
+	monitoringModeAnnounced := false  // Track if we've announced monitoring mode
+	lastMonitoringLog := time.Time{}  // Track last monitoring heartbeat
+	lastStoreAheadLog := time.Time{}  // Track last "store ahead" warning
+	lastMediumBatchLog := time.Time{} // Track last medium batch log (rate limit)
 	// Periodic slice cache save (every 60 seconds if slice count changed)
 	lastSavedSliceCount := len(store.GetSliceInfos())
 	go func() {
@@ -2518,15 +2552,30 @@ func main() {
 			}
 			syncErr := syncFromTraceFiles(serverConfig, traceConfig, uint32(cfg.Workers), uint32(cfg.Prefetchers), store, abiWriter, myLIB+1, syncTarget, &exit, ctx.Done(), broadcastFn, cfg.GetLogInterval())
 
-			// Handle slice errors with reactive validation
-			if syncErr != nil && !exit {
-				logger.Warning("Sync error detected: %v", syncErr)
-				logger.Println("validation", "Running reactive validation to check/repair slices...")
-				if repairErr := store.ValidateAndRepairLastSlices(2); repairErr != nil {
-					logger.Error("Reactive validation failed: %v", repairErr)
-					logger.Fatal("Cannot continue after slice validation failure")
+			switch e := syncErr.(type) {
+			case nil:
+				stalls.reset()
+			case *transientReadError:
+				now := time.Now()
+				if stalls.onTransient(e.block, now, stallEscalationThreshold*time.Second) {
+					logger.Error("Sync stalled at block %d for %s — nodeos may be down (still retrying)",
+						e.block, stalls.stalledFor(now).Round(time.Second))
 				}
-				logger.Println("validation", "Reactive validation complete, will restart sync from repaired position")
+			case *fatalReadError:
+				logger.Fatal("%v", e)
+			default:
+				if errors.Is(syncErr, appendlog.ErrNonContiguousWrite) {
+					logger.Fatal("Gap-safety violation (non-contiguous write): %v", syncErr)
+				}
+				if !exit {
+					logger.Warning("Sync error detected: %v", syncErr)
+					logger.Println("validation", "Running reactive validation to check/repair slices...")
+					if repairErr := store.ValidateAndRepairLastSlices(2); repairErr != nil {
+						logger.Error("Reactive validation failed: %v", repairErr)
+						logger.Fatal("Cannot continue after slice validation failure")
+					}
+					logger.Println("validation", "Reactive validation complete, will restart sync from repaired position")
+				}
 			}
 
 			if exit {
