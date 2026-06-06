@@ -4,6 +4,49 @@ import (
 	"testing"
 )
 
+func TestFilterRawBlock_CarriesOrdinals(t *testing.T) {
+	namesInBlock := []uint64{1111, 5555}
+
+	notif := RawBlock{
+		BlockNum:     100,
+		BlockTime:    1000000,
+		NamesInBlock: namesInBlock,
+		Notifications: map[uint64][]uint64{
+			1111: {1},
+		},
+		ActionMeta: []ActionMetadata{
+			{GlobalSeq: 1, Contract: 5555, Action: 6666},
+		},
+		Actions: []CanonicalAction{
+			{
+				ActionOrdinal:      3,
+				CreatorAO:          1,
+				ClosestUAAO:        1,
+				ReceiverUint64:     5555,
+				DataIndex:          0,
+				AuthAccountIndexes: []uint32{0},
+				GlobalSeqUint64:    1,
+				TrxIndex:           0,
+				ContractUint64:     5555,
+				ActionUint64:       6666,
+			},
+		},
+	}
+
+	filtered := FilterRawBlock(notif, nil)
+	if len(filtered.Actions) == 0 {
+		t.Fatal("expected filtered actions, got 0")
+	}
+	for _, a := range filtered.Actions {
+		if a.GlobalSeq != 1 {
+			continue
+		}
+		if a.ActionOrdinal != 3 || a.CreatorAO != 1 || a.ClosestUAAO != 1 {
+			t.Errorf("seq 1 ordinals = (%d,%d,%d), want (3,1,1)", a.ActionOrdinal, a.CreatorAO, a.ClosestUAAO)
+		}
+	}
+}
+
 func TestFilterRawBlock_Actions(t *testing.T) {
 	namesInBlock := []uint64{1111, 2222, 5555, 8888}
 

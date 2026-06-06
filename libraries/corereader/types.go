@@ -16,6 +16,7 @@ type ActionMetadata struct {
 type CanonicalAction struct {
 	ActionOrdinal      uint32
 	CreatorAO          uint32
+	ClosestUAAO        uint32
 	ReceiverUint64     uint64
 	DataIndex          uint32
 	AuthAccountIndexes []uint32
@@ -66,13 +67,16 @@ func (r *RawBlock) SetActionData(rawData []byte, offsets, lengths []uint32) {
 // Action represents a canonically-deduplicated action for a specific account.
 // This is the output of canonical filtering - one Action per (account, globalSeq) pair.
 type Action struct {
-	Account      uint64
-	Contract     uint64
-	Action       uint64
-	GlobalSeq    uint64
-	TrxIndex     uint32
-	IsAuthorizer bool
-	Receiver     uint64 // chain receiver; differs from Account on authorizer-indexed entries
+	Account       uint64
+	Contract      uint64
+	Action        uint64
+	GlobalSeq     uint64
+	TrxIndex      uint32
+	IsAuthorizer  bool
+	Receiver      uint64 // chain receiver; differs from Account on authorizer-indexed entries
+	ActionOrdinal uint32
+	CreatorAO     uint32
+	ClosestUAAO   uint32
 }
 
 // ContractExecution represents a contract execution (receiver == contract).

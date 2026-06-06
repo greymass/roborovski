@@ -348,15 +348,18 @@ func (p *AccountHistoryProcessor) broadcastActions(block corereader.Block) error
 	sendOne := func(seq uint64, g *seqGroup, data []byte, cpuUs, netWords uint32) bool {
 		a := &block.Actions[g.firstIndex]
 		return p.syncer.broadcaster.Broadcast(StreamedAction{
-			GlobalSeq:     seq,
-			BlockNum:      block.BlockNum,
-			BlockTime:     block.BlockTime,
-			Contract:      a.Contract,
-			Action:        a.Action,
-			Receiver:      a.Receiver,
-			ActionData:    data,
-			CpuUsageUs:    cpuUs,
-			NetUsageWords: netWords,
+			GlobalSeq:                              seq,
+			BlockNum:                               block.BlockNum,
+			BlockTime:                              block.BlockTime,
+			Contract:                               a.Contract,
+			Action:                                 a.Action,
+			Receiver:                               a.Receiver,
+			ActionData:                             data,
+			CpuUsageUs:                             cpuUs,
+			NetUsageWords:                          netWords,
+			ActionOrdinal:                          a.ActionOrdinal,
+			CreatorActionOrdinal:                   a.CreatorAO,
+			ClosestUnnotifiedAncestorActionOrdinal: a.ClosestUAAO,
 		}, g.matchedVia)
 	}
 

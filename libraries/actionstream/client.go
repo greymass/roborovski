@@ -20,13 +20,13 @@ var (
 )
 
 const (
-	MsgTypeActionSubscribe   uint8 = 0x30
-	MsgTypeActionAck         uint8 = 0x31
-	MsgTypeActionBatch       uint8 = 0x32
-	MsgTypeActionHeartbeat   uint8 = 0x33
-	MsgTypeActionError       uint8 = 0x34
-	MsgTypeActionDecoded     uint8 = 0x35
-	MsgTypeCatchupComplete   uint8 = 0x36
+	MsgTypeActionSubscribe uint8 = 0x30
+	MsgTypeActionAck       uint8 = 0x31
+	MsgTypeActionBatch     uint8 = 0x32
+	MsgTypeActionHeartbeat uint8 = 0x33
+	MsgTypeActionError     uint8 = 0x34
+	MsgTypeActionDecoded   uint8 = 0x35
+	MsgTypeCatchupComplete uint8 = 0x36
 
 	MaxMessageSize = 10 * 1024 * 1024
 )
@@ -51,15 +51,18 @@ func DefaultClientConfig() ClientConfig {
 }
 
 type Action struct {
-	GlobalSeq     uint64
-	BlockNum      uint32
-	BlockTime     uint32
-	Contract      string
-	Action        string
-	Receiver      string
-	ActionData    []byte
-	CpuUsageUs    uint32
-	NetUsageWords uint32
+	GlobalSeq                              uint64
+	BlockNum                               uint32
+	BlockTime                              uint32
+	Contract                               string
+	Action                                 string
+	Receiver                               string
+	ActionData                             []byte
+	CpuUsageUs                             uint32
+	NetUsageWords                          uint32
+	ActionOrdinal                          uint32
+	CreatorActionOrdinal                   uint32
+	ClosestUnnotifiedAncestorActionOrdinal uint32
 }
 
 type Filter struct {
@@ -492,7 +495,7 @@ func (c *Client) writeMessage(w io.Writer, msgType uint8, payload []byte) error 
 }
 
 func (c *Client) decodeAction(payload []byte) (Action, error) {
-	if len(payload) < 48 {
+	if len(payload) < 60 {
 		return Action{}, errors.New("action payload too short")
 	}
 
@@ -504,22 +507,28 @@ func (c *Client) decodeAction(payload []byte) (Action, error) {
 	receiver := binary.LittleEndian.Uint64(payload[32:40])
 	cpuUsageUs := binary.LittleEndian.Uint32(payload[40:44])
 	netUsageWords := binary.LittleEndian.Uint32(payload[44:48])
+	actionOrdinal := binary.LittleEndian.Uint32(payload[48:52])
+	creatorActionOrdinal := binary.LittleEndian.Uint32(payload[52:56])
+	closestUAAO := binary.LittleEndian.Uint32(payload[56:60])
 
 	var actionData []byte
-	if len(payload) > 48 {
-		actionData = payload[48:]
+	if len(payload) > 60 {
+		actionData = payload[60:]
 	}
 
 	return Action{
-		GlobalSeq:     globalSeq,
-		BlockNum:      blockNum,
-		BlockTime:     blockTime,
-		Contract:      chain.NameToString(contract),
-		Action:        chain.NameToString(actionName),
-		Receiver:      chain.NameToString(receiver),
-		ActionData:    actionData,
-		CpuUsageUs:    cpuUsageUs,
-		NetUsageWords: netUsageWords,
+		GlobalSeq:                              globalSeq,
+		BlockNum:                               blockNum,
+		BlockTime:                              blockTime,
+		Contract:                               chain.NameToString(contract),
+		Action:                                 chain.NameToString(actionName),
+		Receiver:                               chain.NameToString(receiver),
+		ActionData:                             actionData,
+		CpuUsageUs:                             cpuUsageUs,
+		NetUsageWords:                          netUsageWords,
+		ActionOrdinal:                          actionOrdinal,
+		CreatorActionOrdinal:                   creatorActionOrdinal,
+		ClosestUnnotifiedAncestorActionOrdinal: closestUAAO,
 	}, nil
 }
 

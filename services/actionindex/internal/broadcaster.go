@@ -9,15 +9,18 @@ import (
 )
 
 type StreamedAction struct {
-	GlobalSeq  uint64
-	BlockNum   uint32
-	BlockTime  uint32
-	Contract   uint64
-	Action     uint64
-	Receiver      uint64
-	ActionData    []byte
-	CpuUsageUs    uint32
-	NetUsageWords uint32
+	GlobalSeq                              uint64
+	BlockNum                               uint32
+	BlockTime                              uint32
+	Contract                               uint64
+	Action                                 uint64
+	Receiver                               uint64
+	ActionData                             []byte
+	CpuUsageUs                             uint32
+	NetUsageWords                          uint32
+	ActionOrdinal                          uint32
+	CreatorActionOrdinal                   uint32
+	ClosestUnnotifiedAncestorActionOrdinal uint32
 }
 
 type ActionBroadcaster struct {

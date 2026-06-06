@@ -77,6 +77,21 @@ type combinedActionInfo struct {
 	TrxIndex uint32
 }
 
+func newFilteredAction(account uint64, info *combinedActionInfo, globalSeq uint64, isAuth bool) Action {
+	return Action{
+		Account:       account,
+		Contract:      info.Meta.Contract,
+		Action:        info.Meta.Action,
+		GlobalSeq:     globalSeq,
+		TrxIndex:      info.TrxIndex,
+		IsAuthorizer:  isAuth,
+		Receiver:      info.Receiver,
+		ActionOrdinal: info.Action.ActionOrdinal,
+		CreatorAO:     info.Action.CreatorAO,
+		ClosestUAAO:   info.Action.ClosestUAAO,
+	}
+}
+
 type blockFilter struct {
 	// Slice-backed lookup: avoids struct copy on every map access
 	infoSlice      []combinedActionInfo
@@ -315,15 +330,7 @@ func filterBlockInto(bf *blockFilter, notif RawBlock, actionFilter ActionFilterF
 						}
 					}
 				}
-				actionsBuf = append(actionsBuf, Action{
-					Account:      account,
-					Contract:     info.Meta.Contract,
-					Action:       info.Meta.Action,
-					GlobalSeq:    globalSeq,
-					TrxIndex:     info.TrxIndex,
-					IsAuthorizer: isAuth,
-					Receiver:     info.Receiver,
-				})
+				actionsBuf = append(actionsBuf, newFilteredAction(account, info, globalSeq, isAuth))
 				if minSeq == 0 || globalSeq < minSeq {
 					minSeq = globalSeq
 				}
@@ -371,15 +378,7 @@ func filterBlockInto(bf *blockFilter, notif RawBlock, actionFilter ActionFilterF
 				}
 			}
 
-			actionsBuf = append(actionsBuf, Action{
-				Account:      account,
-				Contract:     info.Meta.Contract,
-				Action:       info.Meta.Action,
-				GlobalSeq:    globalSeq,
-				TrxIndex:     info.TrxIndex,
-				IsAuthorizer: true,
-				Receiver:     info.Receiver,
-			})
+			actionsBuf = append(actionsBuf, newFilteredAction(account, info, globalSeq, true))
 			if minSeq == 0 || globalSeq < minSeq {
 				minSeq = globalSeq
 			}
@@ -499,15 +498,7 @@ func filterBlockIntoTimed(bf *blockFilter, notif RawBlock, actionFilter ActionFi
 						}
 					}
 				}
-				actionsBuf = append(actionsBuf, Action{
-					Account:      account,
-					Contract:     info.Meta.Contract,
-					Action:       info.Meta.Action,
-					GlobalSeq:    globalSeq,
-					TrxIndex:     info.TrxIndex,
-					IsAuthorizer: isAuth,
-					Receiver:     info.Receiver,
-				})
+				actionsBuf = append(actionsBuf, newFilteredAction(account, info, globalSeq, isAuth))
 				if minSeq == 0 || globalSeq < minSeq {
 					minSeq = globalSeq
 				}
@@ -558,15 +549,7 @@ func filterBlockIntoTimed(bf *blockFilter, notif RawBlock, actionFilter ActionFi
 				}
 			}
 
-			actionsBuf = append(actionsBuf, Action{
-				Account:      account,
-				Contract:     info.Meta.Contract,
-				Action:       info.Meta.Action,
-				GlobalSeq:    globalSeq,
-				TrxIndex:     info.TrxIndex,
-				IsAuthorizer: true,
-				Receiver:     info.Receiver,
-			})
+			actionsBuf = append(actionsBuf, newFilteredAction(account, info, globalSeq, true))
 			if minSeq == 0 || globalSeq < minSeq {
 				minSeq = globalSeq
 			}

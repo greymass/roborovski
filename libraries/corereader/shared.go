@@ -220,6 +220,7 @@ type syncBlockData struct {
 type syncActionInfo struct {
 	ActionOrdinal      uint32
 	CreatorAO          uint32
+	ClosestUAAO        uint32
 	ReceiverIndex      uint32
 	ContractNameIndex  uint32
 	ActionNameIndex    uint32
@@ -537,8 +538,9 @@ func parseSyncActionDirect(r *byteSliceReader, blob *syncBlockBlob, authBufOffse
 		action.CreatorAO = uint32(r.ReadUvarint())
 	}
 
+	action.ClosestUAAO = action.CreatorAO
 	if (magicmask1 & (1 << 3)) == 0 {
-		r.ReadUvarint()
+		action.ClosestUAAO = action.CreatorAO ^ uint32(r.ReadUvarint())
 	}
 
 	if (magicmask1 & (1 << 2)) == 0 {

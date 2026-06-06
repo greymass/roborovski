@@ -8,6 +8,56 @@ import (
 	"github.com/greymass/roborovski/libraries/corereader"
 )
 
+func TestBroadcastActions_CarriesOrdinals(t *testing.T) {
+	contract := chain.StringToName("shipload.gm")
+	action := chain.StringToName("consume")
+	const seq = uint64(700)
+
+	broadcaster := NewActionBroadcaster()
+	broadcaster.SetLiveMode(true)
+	sub := broadcaster.Subscribe(ActionFilter{
+		Contracts: map[uint64]struct{}{contract: {}},
+	})
+
+	reader := &stubReaderForBroadcast{
+		bySeq: map[uint64]chain.ActionTrace{
+			seq: {
+				BlockNum: 1, BlockTime: "1970-01-01T00:16:40.000",
+				Receiver: "shipload.gm",
+				Act:      chain.Action{Account: "shipload.gm", Name: "consume"},
+			},
+		},
+	}
+
+	block := corereader.Block{
+		BlockNum:  1,
+		BlockTime: 1000,
+		MaxSeq:    seq,
+		Actions: []corereader.Action{
+			{
+				Account: contract, Contract: contract, Action: action,
+				GlobalSeq: seq, Receiver: contract,
+				ActionOrdinal: 3, CreatorAO: 1, ClosestUAAO: 1,
+			},
+		},
+	}
+
+	syncer := &Syncer{broadcaster: broadcaster, reader: reader, config: &Config{}}
+	proc := NewAccountHistoryProcessor(syncer)
+	if err := proc.broadcastActions(block); err != nil {
+		t.Fatalf("broadcastActions error: %v", err)
+	}
+
+	delivered := drainExactly(t, sub, 1)
+	if len(delivered) != 1 {
+		t.Fatalf("expected 1 delivery, got %d", len(delivered))
+	}
+	d := delivered[0]
+	if d.ActionOrdinal != 3 || d.CreatorActionOrdinal != 1 || d.ClosestUnnotifiedAncestorActionOrdinal != 1 {
+		t.Errorf("ordinals = (%d,%d,%d), want (3,1,1)",
+			d.ActionOrdinal, d.CreatorActionOrdinal, d.ClosestUnnotifiedAncestorActionOrdinal)
+	}
+}
 
 // stubReaderForBroadcast satisfies corereader.Reader minimally for broadcastActions tests.
 // Only GetActionsByGlobalSeqs is called from the fetched-traces sub-path.
