@@ -1,6 +1,7 @@
 package appendlog
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -651,4 +652,68 @@ func TestSliceStore_DirectoryStructure(t *testing.T) {
 		t.Error("history_0000000001-0000000010/blocks.index not created")
 	}
 	// Note: globalseq.index is no longer created (removed Jan 2025 for performance)
+}
+
+func newTestStore(t *testing.T) *SliceStore {
+	t.Helper()
+	store, err := NewSliceStore(t.TempDir(), SliceStoreOptions{
+		BlocksPerSlice: 100,
+		BlockCacheSize: 10,
+		Debug:          false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	return store
+}
+
+func TestAppendBlock_RejectsNonContiguous(t *testing.T) {
+	store := newTestStore(t)
+	data := []byte("x")
+
+	if err := store.AppendBlock(2, data, 1, 1, false); err != nil {
+		t.Fatalf("first append: %v", err)
+	}
+	err := store.AppendBlock(4, data, 2, 2, false)
+	if !errors.Is(err, ErrNonContiguousWrite) {
+		t.Fatalf("expected ErrNonContiguousWrite, got %v", err)
+	}
+	if store.GetHead() != 2 {
+		t.Fatalf("head must be unchanged after rejected write, got %d", store.GetHead())
+	}
+	if err := store.AppendBlock(3, data, 2, 2, false); err != nil {
+		t.Fatalf("contiguous append: %v", err)
+	}
+}
+
+func TestAppendBlockBatch_RejectsInternalGap(t *testing.T) {
+	store := newTestStore(t)
+	d := []byte("x")
+	batch := []BlockEntry{
+		{BlockNum: 2, Data: d, GlobMin: 1, GlobMax: 1},
+		{BlockNum: 4, Data: d, GlobMin: 2, GlobMax: 2},
+	}
+	if err := store.AppendBlockBatch(batch); !errors.Is(err, ErrNonContiguousWrite) {
+		t.Fatalf("expected ErrNonContiguousWrite, got %v", err)
+	}
+	if store.GetHead() != 0 {
+		t.Fatalf("head must be unchanged after rejected batch, got %d", store.GetHead())
+	}
+}
+
+func TestAppendBlockBatch_AcceptsContiguous(t *testing.T) {
+	store := newTestStore(t)
+	d := []byte("x")
+	batch := []BlockEntry{
+		{BlockNum: 2, Data: d, GlobMin: 1, GlobMax: 1},
+		{BlockNum: 3, Data: d, GlobMin: 2, GlobMax: 2},
+		{BlockNum: 4, Data: d, GlobMin: 3, GlobMax: 3},
+	}
+	if err := store.AppendBlockBatch(batch); err != nil {
+		t.Fatalf("contiguous batch: %v", err)
+	}
+	if store.GetHead() != 4 {
+		t.Fatalf("expected head 4, got %d", store.GetHead())
+	}
 }

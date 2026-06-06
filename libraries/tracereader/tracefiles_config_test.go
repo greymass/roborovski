@@ -3,6 +3,7 @@ package tracereader
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -453,6 +454,58 @@ func createTestIndexFileWithMultipleBlocks(path string, startBlock, endBlock uin
 	return nil
 }
 
+func createTestIndexFileWithPartialTail(path string, startBlock, endBlock uint32) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	if err := binary.Write(f, binary.LittleEndian, HeaderVersion); err != nil {
+		return err
+	}
+
+	offset := uint64(0)
+	blockDataSize := uint64(100)
+	for blockNum := startBlock; blockNum <= endBlock; blockNum++ {
+		f.Write([]byte{0})
+
+		id := [32]byte{byte(blockNum & 0xFF), byte((blockNum >> 8) & 0xFF)}
+		f.Write(id[:])
+		binary.Write(f, binary.LittleEndian, blockNum)
+		binary.Write(f, binary.LittleEndian, offset)
+		offset += blockDataSize
+	}
+
+	f.Write([]byte{0})
+	f.Write([]byte{0xAA, 0xBB, 0xCC})
+
+	return nil
+}
+
+func TestGetRawBlocksWithMetadata_PartialTrailingRecord(t *testing.T) {
+	tmpDir := t.TempDir()
+	conf := &Config{Debug: false, Stride: 500, Dir: tmpDir}
+
+	indexFile := filepath.Join(tmpDir, "trace_index_0000000000-0000000500.log")
+	if err := createTestIndexFileWithPartialTail(indexFile, 100, 105); err != nil {
+		t.Fatalf("Failed to create test index file: %v", err)
+	}
+
+	traceFile := filepath.Join(tmpDir, "trace_0000000000-0000000500.log")
+	if err := os.WriteFile(traceFile, make([]byte, 600), 0644); err != nil {
+		t.Fatalf("Failed to create trace file: %v", err)
+	}
+
+	rawBlocks, err := GetRawBlocksWithMetadata(100, 1, conf)
+	if err != nil {
+		t.Fatalf("GetRawBlocksWithMetadata() with partial trailing record = %v; want success (block 100's entry is complete)", err)
+	}
+	if len(rawBlocks) != 1 || rawBlocks[0].BlockNum != 100 {
+		t.Fatalf("got %d blocks (%v); want exactly block 100", len(rawBlocks), rawBlocks)
+	}
+}
+
 func TestGetInfo_DebugMode(t *testing.T) {
 	tmpDir := t.TempDir()
 	conf := &Config{
@@ -516,6 +569,37 @@ func TestOpenSliceIndex_EmptyFile(t *testing.T) {
 	_, err = openSliceIndex(indexFile, conf)
 	if err == nil {
 		t.Error("Expected error for empty file")
+	}
+}
+
+func TestGetRawBlocksWithMetadata_IncompleteData(t *testing.T) {
+	tmpDir := t.TempDir()
+	conf := &Config{Debug: false, Stride: 500, Dir: tmpDir}
+
+	indexFile := filepath.Join(tmpDir, "trace_index_0000000000-0000000500.log")
+	if err := createTestIndexFileWithMultipleBlocks(indexFile, 100, 105); err != nil {
+		t.Fatalf("Failed to create test index file: %v", err)
+	}
+	traceFile := filepath.Join(tmpDir, "trace_0000000000-0000000500.log")
+	if err := os.WriteFile(traceFile, make([]byte, 50), 0644); err != nil {
+		t.Fatalf("Failed to create trace file: %v", err)
+	}
+
+	_, err := GetRawBlocksWithMetadata(100, 1, conf)
+	if !errors.Is(err, ErrIncompleteData) {
+		t.Fatalf("expected ErrIncompleteData, got %v", err)
+	}
+}
+
+func TestOpenSliceIndex_PartialHeader(t *testing.T) {
+	tmpDir := t.TempDir()
+	indexFile := filepath.Join(tmpDir, "trace_index_partial.log")
+	if err := os.WriteFile(indexFile, []byte{0x01, 0x00}, 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	conf := &Config{Debug: false}
+	if _, err := openSliceIndex(indexFile, conf); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for partial header, got %v", err)
 	}
 }
 
