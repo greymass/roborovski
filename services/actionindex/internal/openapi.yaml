@@ -1156,6 +1156,10 @@ components:
         - global_action_seq
         - contract
         - action
+        - receiver
+        - action_ordinal
+        - creator_action_ordinal
+        - closest_unnotified_ancestor_action_ordinal
         - account_ram_deltas
       properties:
         global_action_seq:
@@ -1165,6 +1169,21 @@ components:
           type: string
         action:
           type: string
+        receiver:
+          type: string
+          description: Account that received (executed) this action trace. Equals contract for top-level and inline actions; differs for require_recipient notifications.
+        action_ordinal:
+          type: integer
+          format: uint32
+          description: Position of this action trace within the transaction's execution tree.
+        creator_action_ordinal:
+          type: integer
+          format: uint32
+          description: action_ordinal of the action that scheduled this one. 0 for top-level (transaction-signed) actions; >0 for inline actions and notifications.
+        closest_unnotified_ancestor_action_ordinal:
+          type: integer
+          format: uint32
+          description: action_ordinal of the closest ancestor that was not itself a notification receipt.
         account_ram_deltas:
           type: array
           items:

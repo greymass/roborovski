@@ -15,6 +15,10 @@ type UsageAction struct {
 	GlobalActionSeq  uint64               `json:"global_action_seq"`
 	Contract         string               `json:"contract"`
 	Action           string               `json:"action"`
+	Receiver         string               `json:"receiver"`
+	ActionOrdinal    uint32               `json:"action_ordinal"`
+	CreatorAO        uint32               `json:"creator_action_ordinal"`
+	ClosestUAAO      uint32               `json:"closest_unnotified_ancestor_action_ordinal"`
 	AccountRAMDeltas []chain.AccountDelta `json:"account_ram_deltas"`
 }
 
@@ -116,6 +120,10 @@ func fetchUsageByGlobalSeqs(reader corereader.Reader, globalSeqs []uint64) ([]Us
 			GlobalActionSeq:  globalSeqs[i],
 			Contract:         at.Act.Account,
 			Action:           at.Act.Name,
+			Receiver:         at.Receiver,
+			ActionOrdinal:    at.ActionOrdinal,
+			CreatorAO:        at.CreatorAO,
+			ClosestUAAO:      at.ClosestUAAO,
 			AccountRAMDeltas: at.AccountRAMDeltas,
 		}
 
