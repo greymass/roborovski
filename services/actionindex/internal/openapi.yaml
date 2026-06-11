@@ -1160,6 +1160,7 @@ components:
         - action_ordinal
         - creator_action_ordinal
         - closest_unnotified_ancestor_action_ordinal
+        - authorization
         - account_ram_deltas
       properties:
         global_action_seq:
@@ -1184,6 +1185,16 @@ components:
           type: integer
           format: uint32
           description: action_ordinal of the closest ancestor that was not itself a notification receipt.
+        authorization:
+          type: array
+          description: The action's declared authorizations in on-chain order. authorization[0].actor is the action's first authorizer. Empty for context-free actions.
+          items:
+            type: object
+            properties:
+              actor:
+                type: string
+              permission:
+                type: string
         account_ram_deltas:
           type: array
           items:

@@ -12,14 +12,15 @@ import (
 )
 
 type UsageAction struct {
-	GlobalActionSeq  uint64               `json:"global_action_seq"`
-	Contract         string               `json:"contract"`
-	Action           string               `json:"action"`
-	Receiver         string               `json:"receiver"`
-	ActionOrdinal    uint32               `json:"action_ordinal"`
-	CreatorAO        uint32               `json:"creator_action_ordinal"`
-	ClosestUAAO      uint32               `json:"closest_unnotified_ancestor_action_ordinal"`
-	AccountRAMDeltas []chain.AccountDelta `json:"account_ram_deltas"`
+	GlobalActionSeq  uint64                  `json:"global_action_seq"`
+	Contract         string                  `json:"contract"`
+	Action           string                  `json:"action"`
+	Receiver         string                  `json:"receiver"`
+	ActionOrdinal    uint32                  `json:"action_ordinal"`
+	CreatorAO        uint32                  `json:"creator_action_ordinal"`
+	ClosestUAAO      uint32                  `json:"closest_unnotified_ancestor_action_ordinal"`
+	Authorization    []chain.PermissionLevel `json:"authorization"`
+	AccountRAMDeltas []chain.AccountDelta    `json:"account_ram_deltas"`
 }
 
 type UsageTransaction struct {
@@ -124,6 +125,7 @@ func fetchUsageByGlobalSeqs(reader corereader.Reader, globalSeqs []uint64) ([]Us
 			ActionOrdinal:    at.ActionOrdinal,
 			CreatorAO:        at.CreatorAO,
 			ClosestUAAO:      at.ClosestUAAO,
+			Authorization:    at.Act.Authorization,
 			AccountRAMDeltas: at.AccountRAMDeltas,
 		}
 
