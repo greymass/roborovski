@@ -376,7 +376,23 @@ type sliceReader struct {
 	mu              sync.RWMutex
 	refCount        atomic.Int32
 	mmapWaitTimeout time.Duration // Max time to wait for data file growth (0 = use default 30s)
+	owner           readerOwnership
 }
+
+// readerOwnership tells releaseSliceReader how a reader is held: decref, leave, or close.
+type readerOwnership uint8
+
+const (
+	ownerOneShot readerOwnership = iota // uncached; releaseSliceReader must close it
+	ownerCached                         // held in sliceReaders LRU; refcounted
+	ownerPinned                         // held in pinnedSlices; persistent, never released per-call
+)
+
+// liveSliceMmaps gauges open slice data.log mmaps; a climbing value means a reader leak.
+var liveSliceMmaps atomic.Int64
+
+// LiveSliceMmaps reports how many slice data.log mmaps are currently open.
+func LiveSliceMmaps() int64 { return liveSliceMmaps.Load() }
 
 type SliceGlobRange struct {
 	SliceNum uint32 // Slice number
@@ -1045,6 +1061,13 @@ func (sr *SliceReader) Close() error {
 			}
 		}
 
+		sr.pinnedSlicesMu.Lock()
+		for _, reader := range sr.pinnedSlices {
+			reader.close()
+		}
+		sr.pinnedSlices = make(map[uint32]*sliceReader)
+		sr.pinnedSlicesMu.Unlock()
+
 		sr.sliceReadersMu.Lock()
 		defer sr.sliceReadersMu.Unlock()
 
@@ -1157,7 +1180,7 @@ func (sr *SliceReader) GetSliceBlockStats(sliceNum uint32) (*SliceBlockStats, er
 	if err != nil {
 		return nil, fmt.Errorf("failed to load slice reader: %w", err)
 	}
-	defer sr.releaseSliceReader(sliceNum)
+	defer sr.releaseSliceReader(reader)
 
 	stats := &SliceBlockStats{
 		SliceNum:   sliceNum,
@@ -1237,7 +1260,7 @@ func (sr *SliceReader) GetSliceHeader(sliceNum uint32) (*DataLogHeader, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer sr.releaseSliceReader(sliceNum)
+	defer sr.releaseSliceReader(reader)
 	return reader.header, nil
 }
 
@@ -1580,7 +1603,7 @@ func (sr *SliceReader) findSliceForGlobFromDisk(glob uint64, startSliceNum uint3
 			continue
 		}
 		globMin, globMax := reader.getGlobRangeFromBlockIndex()
-		sr.releaseSliceReader(slice.SliceNum)
+		sr.releaseSliceReader(reader)
 		if globMin == 0 && globMax == 0 {
 			logger.Printf("debug", "Slice %d has empty block index", slice.SliceNum)
 			continue
@@ -1653,7 +1676,7 @@ func (sr *SliceReader) findSliceForGlobLegacy(glob uint64) (*SliceInfo, error) {
 				continue
 			}
 			globMin, globMax = reader.getGlobRangeFromBlockIndex()
-			sr.releaseSliceReader(slice.SliceNum)
+			sr.releaseSliceReader(reader)
 			if globMin == 0 && globMax == 0 {
 				logger.Printf("warning", "Slice %d has empty block index, skipping", slice.SliceNum)
 				left = mid + 1
@@ -1955,6 +1978,7 @@ func (sr *SliceReader) getPinnedSliceReader(sliceNum uint32) (*sliceReader, erro
 		return nil, err
 	}
 
+	reader.owner = ownerPinned
 	sr.pinnedSlices[sliceNum] = reader
 	return reader, nil
 }
@@ -2055,11 +2079,7 @@ func (sr *SliceReader) getSliceReader(sliceNum uint32) (*sliceReader, error) {
 			return nil, err
 		}
 
-		sr.evictIfNeededLocked()
-
-		reader.refCount.Add(1)
-		sr.sliceReaders[sliceNum] = reader
-		sr.cacheOrder = append(sr.cacheOrder, sliceNum)
+		sr.cacheReaderLocked(sliceNum, reader)
 		sr.sliceReadersMu.Unlock()
 
 		return reader, nil
@@ -2071,13 +2091,19 @@ func (sr *SliceReader) getSliceReader(sliceNum uint32) (*sliceReader, error) {
 	}
 
 	sr.sliceReadersMu.Lock()
-	sr.evictIfNeededLocked()
-	reader.refCount.Add(1)
-	sr.sliceReaders[sliceNum] = reader
-	sr.cacheOrder = append(sr.cacheOrder, sliceNum)
+	sr.cacheReaderLocked(sliceNum, reader)
 	sr.sliceReadersMu.Unlock()
 
 	return reader, nil
+}
+
+// cacheReaderLocked inserts a freshly loaded reader into the LRU; caller holds sliceReadersMu.
+func (sr *SliceReader) cacheReaderLocked(sliceNum uint32, reader *sliceReader) {
+	sr.evictIfNeededLocked()
+	reader.owner = ownerCached
+	reader.refCount.Add(1)
+	sr.sliceReaders[sliceNum] = reader
+	sr.cacheOrder = append(sr.cacheOrder, sliceNum)
 }
 
 func (sr *SliceReader) evictIfNeededLocked() {
@@ -2115,12 +2141,17 @@ func (sr *SliceReader) updateCacheOrder(sliceNum uint32) {
 	}
 }
 
-func (sr *SliceReader) releaseSliceReader(sliceNum uint32) {
-	sr.sliceReadersMu.RLock()
-	reader, found := sr.sliceReaders[sliceNum]
-	sr.sliceReadersMu.RUnlock()
-	if found {
+func (sr *SliceReader) releaseSliceReader(reader *sliceReader) {
+	if reader == nil {
+		return
+	}
+	switch reader.owner {
+	case ownerCached:
 		reader.refCount.Add(-1)
+	case ownerPinned:
+		// persistent; nothing to release per-call
+	default: // ownerOneShot: uncached reader for an unfinalized slice
+		reader.close()
 	}
 }
 
@@ -2170,6 +2201,7 @@ func newSliceReader(basePath string, sliceNum uint32) (*sliceReader, error) {
 			return nil, fmt.Errorf("failed to mmap data log: %w", err)
 		}
 		reader.mmapData = mmapData
+		liveSliceMmaps.Add(1)
 
 		if len(mmapData) >= DataLogHeaderSize {
 			header, err := ParseDataLogHeader(mmapData[:DataLogHeaderSize])
@@ -2190,6 +2222,7 @@ func (r *sliceReader) close() error {
 	if r.mmapData != nil {
 		syscall.Munmap(r.mmapData)
 		r.mmapData = nil
+		liveSliceMmaps.Add(-1)
 	}
 
 	if r.blockFile != nil {
@@ -2581,7 +2614,7 @@ func (sr *SliceReader) GetNotificationsWithActionMetadata(blockNum uint32) (map[
 		}
 
 		blockData, err = reader.readBlockData(blockNum)
-		sr.releaseSliceReader(sliceInfo.SliceNum)
+		sr.releaseSliceReader(reader)
 		if err != nil {
 			logger.Printf("error", "ERROR: Block %d - readBlockData failed: %v", blockNum, err)
 			return nil, nil, "", "", err
@@ -2674,7 +2707,7 @@ func (sr *SliceReader) GetNotificationsWithActionMetadataFiltered(blockNum uint3
 		}
 
 		blockData, err = reader.readBlockData(blockNum)
-		sr.releaseSliceReader(sliceInfo.SliceNum)
+		sr.releaseSliceReader(reader)
 		if err != nil {
 			errMsg := err.Error()
 			if !strings.Contains(errMsg, "not found in slice") {
@@ -2752,7 +2785,7 @@ func (sr *SliceReader) GetNotificationsOnly(blockNum uint32) (map[uint64][]uint6
 	}
 
 	blockData, err := reader.readBlockData(blockNum)
-	sr.releaseSliceReader(sliceInfo.SliceNum)
+	sr.releaseSliceReader(reader)
 	if err != nil {
 		return nil, "", "", err
 	}
@@ -2801,7 +2834,7 @@ func (sr *SliceReader) GetTransactionIDsOnly(blockNum uint32, skipOnblock bool) 
 	}
 
 	blockData, err := reader.readBlockData(blockNum)
-	sr.releaseSliceReader(sliceInfo.SliceNum)
+	sr.releaseSliceReader(reader)
 	if err != nil {
 		return nil, "", "", err
 	}
@@ -2833,7 +2866,7 @@ func (sr *SliceReader) GetTransactionIDsRaw(blockNum uint32) ([][32]byte, error)
 	}
 
 	blockData, err := reader.readBlockData(blockNum)
-	sr.releaseSliceReader(sliceInfo.SliceNum)
+	sr.releaseSliceReader(reader)
 	if err != nil {
 		return nil, err
 	}
@@ -2854,7 +2887,7 @@ func (sr *SliceReader) GetActionsForTransaction(blockNum uint32, trxID string) (
 	}
 
 	blockData, err := reader.readBlockData(blockNum)
-	sr.releaseSliceReader(sliceInfo.SliceNum)
+	sr.releaseSliceReader(reader)
 	if err != nil {
 		return nil, "", err
 	}
@@ -2900,7 +2933,7 @@ func (sr *SliceReader) GetTransactionData(blockNum uint32, trxID string) (*Trans
 	}
 
 	blockData, err := reader.readBlockData(blockNum)
-	sr.releaseSliceReader(sliceInfo.SliceNum)
+	sr.releaseSliceReader(reader)
 	if err != nil {
 		return nil, err
 	}
@@ -3029,7 +3062,7 @@ func (sr *SliceReader) GetRawBlockBatchFiltered(startBlock, endBlock uint32, fil
 				return nil, fmt.Errorf("block %d: %w", bn, err)
 			}
 			blockData, err = reader.readBlockData(bn)
-			sr.releaseSliceReader(sliceInfo.SliceNum)
+			sr.releaseSliceReader(reader)
 			if err != nil {
 				return nil, fmt.Errorf("block %d: %w", bn, err)
 			}
@@ -3558,7 +3591,7 @@ func (sr *SliceReader) GetRawBlocksBatch(startBlock, endBlock uint32) ([]RawBloc
 				return nil, fmt.Errorf("block %d: %w", bn, err)
 			}
 			blockData, err = reader.readBlockData(bn)
-			sr.releaseSliceReader(sliceInfo.SliceNum)
+			sr.releaseSliceReader(reader)
 			if err != nil {
 				return nil, fmt.Errorf("block %d: %w", bn, err)
 			}
@@ -4006,8 +4039,8 @@ func (sr *SliceReader) GetActionsByGlobalSeqs(globalSeqs []uint64) ([]chain.Acti
 	phase1cDuration := time.Since(phase1cStart)
 	phase1Duration := time.Since(phase1Start)
 
-	for sliceNum := range sliceCache {
-		sr.releaseSliceReader(sliceNum)
+	for _, reader := range sliceCache {
+		sr.releaseSliceReader(reader)
 	}
 
 	// Group blocks by slice for efficient batch processing
@@ -4086,7 +4119,7 @@ func (sr *SliceReader) GetActionsByGlobalSeqs(globalSeqs []uint64) ([]chain.Acti
 					blockData, err := reader.readBlockData(bn)
 					if err != nil {
 						resultChan <- blockResult{err: fmt.Errorf("failed to read block %d: %w", bn, err)}
-						sr.releaseSliceReader(sn)
+						sr.releaseSliceReader(reader)
 						return
 					}
 					atomic.AddInt64(&decompressTime, int64(time.Since(decompStart)))
@@ -4125,7 +4158,7 @@ func (sr *SliceReader) GetActionsByGlobalSeqs(globalSeqs []uint64) ([]chain.Acti
 
 			// Release slice reader after processing all blocks
 			if reader != nil {
-				sr.releaseSliceReader(sn)
+				sr.releaseSliceReader(reader)
 			}
 		}(sliceNum, sb.blocks)
 	}
