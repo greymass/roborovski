@@ -101,15 +101,14 @@ func (b *ActionBroadcaster) Broadcast(action StreamedAction, matchedVia []uint64
 			now := time.Now().Unix()
 			lastLog := sub.lastBlockedLog.Load()
 			if blocked == 1 || (now-lastLog >= 5 && sub.lastBlockedLog.CompareAndSwap(lastLog, now)) {
-				logger.Printf("stream", "Subscription %d backpressure: blocked %d actions (sent=%d, acked=%d, seq=%d)",
-					sub.id, blocked, sub.sendCount.Load(), sub.ackCount.Load(), action.GlobalSeq)
+				logger.Printf("stream", "Subscription %d backpressure: blocked %d actions (inFlight=%d, sent=%d, lastAck=%d, seq=%d)",
+					sub.id, blocked, sub.inFlight(), sub.sendCount.Load(), sub.lastAckedSeq.Load(), action.GlobalSeq)
 			}
 			continue
 		}
 		select {
 		case sub.sendCh <- action:
-			sub.sendCount.Add(1)
-			sub.lastSentSeq.Store(action.GlobalSeq)
+			sub.recordSent(action.GlobalSeq)
 			delivered = true
 		default:
 			logger.Printf("stream", "Subscription %d buffer full, dropping action %d", sub.id, action.GlobalSeq)

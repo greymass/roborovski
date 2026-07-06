@@ -32,21 +32,23 @@ const (
 )
 
 type ClientConfig struct {
-	ReconnectDelay    time.Duration
-	ReconnectMaxDelay time.Duration
-	KeepaliveInterval time.Duration
-	AckInterval       uint64
-	Debug             bool
-	Decode            bool
+	ReconnectDelay      time.Duration
+	ReconnectMaxDelay   time.Duration
+	KeepaliveInterval   time.Duration
+	PeriodicAckInterval time.Duration
+	AckInterval         uint64
+	Debug               bool
+	Decode              bool
 }
 
 func DefaultClientConfig() ClientConfig {
 	return ClientConfig{
-		ReconnectDelay:    1 * time.Second,
-		ReconnectMaxDelay: 30 * time.Second,
-		KeepaliveInterval: 30 * time.Second,
-		AckInterval:       1000,
-		Debug:             false,
+		ReconnectDelay:      1 * time.Second,
+		ReconnectMaxDelay:   30 * time.Second,
+		KeepaliveInterval:   30 * time.Second,
+		PeriodicAckInterval: 1 * time.Second,
+		AckInterval:         1000,
+		Debug:               false,
 	}
 }
 
@@ -79,11 +81,13 @@ type Client struct {
 
 	conn      net.Conn
 	connMu    sync.Mutex
+	writeMu   sync.Mutex
 	connected atomic.Bool
 
-	currentSeq uint64
-	lastAcked  uint64
-	seqMu      sync.Mutex
+	currentSeq      uint64
+	lastConsumedSeq uint64
+	lastAcked       uint64
+	seqMu           sync.Mutex
 
 	headSeq atomic.Uint64
 	libSeq  atomic.Uint64
@@ -325,21 +329,44 @@ func (c *Client) keepaliveLoop() {
 	if interval <= 0 {
 		interval = 30 * time.Second
 	}
+	ackInterval := c.config.PeriodicAckInterval
+	if ackInterval <= 0 {
+		ackInterval = 1 * time.Second
+	}
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	ackTicker := time.NewTicker(ackInterval)
+	defer ackTicker.Stop()
 
 	for {
 		select {
 		case <-c.closeChan:
 			return
 		case <-ticker.C:
-			if !c.connected.Load() {
-				continue
+			if c.connected.Load() {
+				c.sendKeepalive()
 			}
-			c.sendKeepalive()
+		case <-ackTicker.C:
+			if c.connected.Load() {
+				c.sendCurrentAck()
+			}
 		}
 	}
+}
+
+// sendCurrentAck releases server backpressure from an idle client, skipping the write when nothing new was consumed.
+func (c *Client) sendCurrentAck() {
+	c.seqMu.Lock()
+	consumed := c.lastConsumedSeq
+	if consumed <= c.lastAcked {
+		c.seqMu.Unlock()
+		return
+	}
+	c.lastAcked = consumed
+	c.seqMu.Unlock()
+
+	c.sendAck(consumed)
 }
 
 func (c *Client) sendKeepalive() {
@@ -364,6 +391,7 @@ func (c *Client) Next() (Action, error) {
 	case action := <-c.recvChan:
 		c.seqMu.Lock()
 		c.currentSeq = action.GlobalSeq + 1
+		c.lastConsumedSeq = action.GlobalSeq
 		shouldAck := c.config.AckInterval > 0 && action.GlobalSeq-c.lastAcked >= c.config.AckInterval
 		if shouldAck {
 			c.lastAcked = action.GlobalSeq
@@ -385,6 +413,7 @@ func (c *Client) NextWithTimeout(timeout time.Duration) (Action, bool, error) {
 	case action := <-c.recvChan:
 		c.seqMu.Lock()
 		c.currentSeq = action.GlobalSeq + 1
+		c.lastConsumedSeq = action.GlobalSeq
 		shouldAck := c.config.AckInterval > 0 && action.GlobalSeq-c.lastAcked >= c.config.AckInterval
 		if shouldAck {
 			c.lastAcked = action.GlobalSeq
@@ -480,6 +509,10 @@ func (c *Client) writeMessage(w io.Writer, msgType uint8, payload []byte) error 
 	header := make([]byte, 5)
 	binary.BigEndian.PutUint32(header[0:4], length)
 	header[4] = msgType
+
+	// serialize frames: acks/heartbeats are written from a separate goroutine
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
 
 	if _, err := w.Write(header); err != nil {
 		return err

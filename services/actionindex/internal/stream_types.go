@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -58,6 +59,9 @@ type StreamError struct {
 	Message string
 }
 
+// maxAhead bounds unacked in-flight actions per subscription.
+const maxAhead = 10000
+
 type Subscription struct {
 	id        uint64
 	filter    ActionFilter
@@ -65,32 +69,45 @@ type Subscription struct {
 	errorCh   chan StreamError
 	createdAt time.Time
 
-	// Backpressure tracking using simple counters (not globalSeq)
-	sendCount atomic.Uint64
-	ackCount  atomic.Uint64
+	// ascending globalSeqs sent but not yet acked; len == exact in-flight count
+	ackMu       sync.Mutex
+	pendingSeqs []uint64
 
 	// Catchup mode - when true, broadcasts are skipped (gap filled from index after)
 	catchingUp atomic.Bool
 
-	// For debugging/logging
-	lastSentSeq    atomic.Uint64
+	// For logging only.
+	sendCount      atomic.Uint64
+	lastAckedSeq   atomic.Uint64
 	blockedCount   atomic.Uint64
 	lastBlockedLog atomic.Int64
 }
 
+func (s *Subscription) recordSent(globalSeq uint64) {
+	s.ackMu.Lock()
+	s.pendingSeqs = append(s.pendingSeqs, globalSeq)
+	s.ackMu.Unlock()
+	s.sendCount.Add(1)
+}
+
+// inFlight returns the number of actions sent but not yet acked.
+func (s *Subscription) inFlight() int {
+	s.ackMu.Lock()
+	n := len(s.pendingSeqs)
+	s.ackMu.Unlock()
+	return n
+}
+
 func (s *Subscription) canSend() bool {
-	const maxAhead = 10000
-	sent := s.sendCount.Load()
-	acked := s.ackCount.Load()
-	if acked >= sent {
-		return true
-	}
-	return sent-acked < maxAhead
+	return s.inFlight() < maxAhead
 }
 
 func (s *Subscription) ResetCounters() {
+	s.ackMu.Lock()
+	s.pendingSeqs = s.pendingSeqs[:0]
+	s.ackMu.Unlock()
 	s.sendCount.Store(0)
-	s.ackCount.Store(0)
+	s.lastAckedSeq.Store(0)
 }
 
 func (s *Subscription) SetCatchingUp(catching bool) {
@@ -101,9 +118,20 @@ func (s *Subscription) IsCatchingUp() bool {
 	return s.catchingUp.Load()
 }
 
+// Ack releases backpressure for every in-flight action at or below globalSeq.
 func (s *Subscription) Ack(globalSeq uint64) {
-	s.ackCount.Add(1)
-	_ = globalSeq // globalSeq no longer used for backpressure, just increment count
+	s.lastAckedSeq.Store(globalSeq)
+
+	s.ackMu.Lock()
+	i := 0
+	for i < len(s.pendingSeqs) && s.pendingSeqs[i] <= globalSeq {
+		i++
+	}
+	if i > 0 {
+		remaining := copy(s.pendingSeqs, s.pendingSeqs[i:])
+		s.pendingSeqs = s.pendingSeqs[:remaining]
+	}
+	s.ackMu.Unlock()
 }
 
 const (

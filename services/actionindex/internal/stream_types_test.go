@@ -6,6 +6,76 @@ import (
 	"github.com/greymass/roborovski/libraries/chain"
 )
 
+func TestSubscription_BackpressureWindow(t *testing.T) {
+	s := &Subscription{}
+
+	for i := 1; i <= maxAhead; i++ {
+		if !s.canSend() {
+			t.Fatalf("canSend() = false at %d in-flight, want true below %d", i-1, maxAhead)
+		}
+		s.recordSent(uint64(i))
+	}
+	if s.canSend() {
+		t.Fatalf("canSend() = true at %d in-flight, want false", s.inFlight())
+	}
+	if got := s.inFlight(); got != maxAhead {
+		t.Fatalf("inFlight() = %d, want %d", got, maxAhead)
+	}
+
+	s.Ack(uint64(maxAhead / 2))
+	if got, want := s.inFlight(), maxAhead-maxAhead/2; got != want {
+		t.Fatalf("inFlight() after ack = %d, want %d", got, want)
+	}
+	if !s.canSend() {
+		t.Fatal("canSend() = false after ack released half the window, want true")
+	}
+}
+
+func TestSubscription_AckSparseAndIdempotent(t *testing.T) {
+	s := &Subscription{}
+
+	seqs := []uint64{100, 5000, 900000, 900001}
+	for _, q := range seqs {
+		s.recordSent(q)
+	}
+	if got := s.inFlight(); got != len(seqs) {
+		t.Fatalf("inFlight() = %d, want %d", got, len(seqs))
+	}
+
+	s.Ack(5000)
+	if got := s.inFlight(); got != 2 {
+		t.Fatalf("inFlight() after Ack(5000) = %d, want 2", got)
+	}
+	s.Ack(5000) // duplicate ack is a no-op
+	if got := s.inFlight(); got != 2 {
+		t.Fatalf("inFlight() after duplicate ack = %d, want 2", got)
+	}
+
+	s.Ack(1_000_000) // ack past everything drains the window
+	if got := s.inFlight(); got != 0 {
+		t.Fatalf("inFlight() after draining ack = %d, want 0", got)
+	}
+	if !s.canSend() {
+		t.Fatal("canSend() = false with empty window")
+	}
+}
+
+func TestSubscription_ResetCounters(t *testing.T) {
+	s := &Subscription{}
+	for i := 1; i <= 100; i++ {
+		s.recordSent(uint64(i))
+	}
+
+	s.ResetCounters()
+
+	if got := s.inFlight(); got != 0 {
+		t.Fatalf("inFlight() after reset = %d, want 0", got)
+	}
+	if s.sendCount.Load() != 0 {
+		t.Fatalf("sendCount not reset: %d", s.sendCount.Load())
+	}
+}
+
 func TestActionFilter_Matches_ContractOnly(t *testing.T) {
 	contract := uint64(5000)
 	action := uint64(6000)
