@@ -18,7 +18,7 @@ help: ## Show this help message
 	@echo "Roborovski Workspace Commands:"
 	@echo ""
 	@echo "Main:"
-	@grep -E '^(build|install|clean|test|verify|tidy):.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-25s %s\n", $$1, $$2}'
+	@grep -E '^(build|install|clean|test|verify|tidy|format|check):.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-25s %s\n", $$1, $$2}'
 	@echo ""
 	@echo "Individual Services (build/<name>, install/<name>):"
 	@echo "  $(SERVICES)" | fold -s -w 70 | sed 's/^/  /'
@@ -70,6 +70,22 @@ tidy: ## Sync workspace dependencies
 	@echo "Syncing workspace..."
 	@go work sync
 	@echo "✅ Workspace synced"
+
+.PHONY: format
+format: ## Format all Go source with gofmt
+	@echo "Formatting Go source..."
+	@gofmt -w -l libraries services tools
+	@echo "✅ Format complete"
+
+.PHONY: check
+check: ## Check formatting without modifying (CI-friendly)
+	@unformatted=$$(gofmt -l libraries services tools); \
+	if [ -n "$$unformatted" ]; then \
+		echo "❌ The following files are not formatted (run 'make format'):"; \
+		echo "$$unformatted"; \
+		exit 1; \
+	fi; \
+	echo "✅ All files formatted"
 
 .PHONY: coverage
 coverage: ## Show test coverage for all modules
