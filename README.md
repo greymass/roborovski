@@ -17,4 +17,9 @@ make verify   # Full validation
 
 ## License
 
-AGPL-3.0 - See [LICENSE](LICENSE)
+The services (everything under `services/`, and this repository as a whole) are
+licensed under AGPL-3.0 - see [LICENSE](LICENSE).
+
+The reusable Go modules under `libraries/` are licensed under MPL-2.0 so they
+can be integrated into any application, open or closed source - see the
+LICENSE file in each library module.
