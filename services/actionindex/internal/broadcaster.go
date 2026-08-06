@@ -21,6 +21,7 @@ type StreamedAction struct {
 	ActionOrdinal                          uint32
 	CreatorActionOrdinal                   uint32
 	ClosestUnnotifiedAncestorActionOrdinal uint32
+	TrxID                                  string
 }
 
 type ActionBroadcaster struct {

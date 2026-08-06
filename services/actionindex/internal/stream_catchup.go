@@ -252,6 +252,7 @@ func (c *StreamCatchup) processBatch(seqs []uint64, account uint64, seqToAccount
 			ActionOrdinal:                          at.ActionOrdinal,
 			CreatorActionOrdinal:                   at.CreatorAO,
 			ClosestUnnotifiedAncestorActionOrdinal: at.ClosestUAAO,
+			TrxID:                                  at.TrxID,
 		}
 
 		if !c.filter.Matches(action, matchedViaBuf[:]) {

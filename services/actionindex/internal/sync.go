@@ -345,9 +345,10 @@ func (p *AccountHistoryProcessor) broadcastActions(block corereader.Block) error
 		return nil
 	}
 
-	sendOne := func(seq uint64, g *seqGroup, data []byte, cpuUs, netWords uint32) bool {
+	sendOne := func(seq uint64, g *seqGroup, data []byte, cpuUs, netWords uint32, trxID string) bool {
 		a := &block.Actions[g.firstIndex]
 		return p.syncer.broadcaster.Broadcast(StreamedAction{
+			TrxID:                                  trxID,
 			GlobalSeq:                              seq,
 			BlockNum:                               block.BlockNum,
 			BlockTime:                              block.BlockTime,
@@ -377,7 +378,13 @@ func (p *AccountHistoryProcessor) broadcastActions(block corereader.Block) error
 			g := groups[seq]
 			data := block.GetActionDataBySeq(seq)
 			cpuUs, netWords := block.GetResourceUsage(seq)
-			if sendOne(seq, g, data, cpuUs, netWords) {
+			id := block.GetTransactionID(block.Actions[g.firstIndex].TrxIndex)
+			if id == ([32]byte{}) {
+				err := fmt.Errorf("block %d: no transaction id for action seq %d", block.BlockNum, seq)
+				p.syncer.broadcaster.BroadcastError(ActionErrorDataInconsistent, err.Error())
+				return err
+			}
+			if sendOne(seq, g, data, cpuUs, netWords, hex.EncodeToString(id[:])) {
 				delivered++
 			}
 		}
@@ -404,7 +411,7 @@ func (p *AccountHistoryProcessor) broadcastActions(block corereader.Block) error
 			if at.Act.Data != "" {
 				data, _ = hex.DecodeString(at.Act.Data)
 			}
-			if sendOne(seq, groups[seq], data, at.CpuUsageUs, at.NetUsageWords) {
+			if sendOne(seq, groups[seq], data, at.CpuUsageUs, at.NetUsageWords, at.TrxID) {
 				delivered++
 			}
 		}

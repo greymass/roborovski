@@ -64,6 +64,11 @@ func (r *RawBlock) SetActionData(rawData []byte, offsets, lengths []uint32) {
 	r.dataLengths = lengths
 }
 
+// SetTransactionIDs populates the transaction-id table (test helper).
+func (r *RawBlock) SetTransactionIDs(trxIDs [][32]byte) {
+	r.trxIDs = trxIDs
+}
+
 // Action represents a canonically-deduplicated action for a specific account.
 // This is the output of canonical filtering - one Action per (account, globalSeq) pair.
 type Action struct {

@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/greymass/roborovski/libraries/abicache"
 	"github.com/greymass/roborovski/libraries/chain"
 	"github.com/greymass/roborovski/libraries/logger"
 	"nhooyr.io/websocket"
@@ -33,6 +34,7 @@ type wsActionMessage struct {
 	Contract  string         `json:"contract"`
 	Action    string         `json:"action"`
 	Receiver  string         `json:"receiver"`
+	TrxID     string         `json:"trx_id"`
 	HexData   string         `json:"hex_data,omitempty"`
 	Data      map[string]any `json:"data,omitempty"`
 }
@@ -269,7 +271,7 @@ func (ws *StreamWebSocketServer) removeClient(wsc *wsStreamClient) {
 		wsc.id, actionsSent, uptime.Round(time.Second), connCount, ws.maxConns)
 }
 
-func (ws *StreamWebSocketServer) sendAction(ctx context.Context, conn *websocket.Conn, action StreamedAction, decode bool) error {
+func buildWsActionMessage(action StreamedAction, decode bool, abiReader *abicache.Reader) wsActionMessage {
 	msg := wsActionMessage{
 		Type:      "action",
 		GlobalSeq: action.GlobalSeq,
@@ -278,11 +280,12 @@ func (ws *StreamWebSocketServer) sendAction(ctx context.Context, conn *websocket
 		Contract:  chain.NameToString(action.Contract),
 		Action:    chain.NameToString(action.Action),
 		Receiver:  chain.NameToString(action.Receiver),
+		TrxID:     action.TrxID,
 	}
 
 	if decode && len(action.ActionData) > 0 {
-		if ws.server.abiReader != nil {
-			decoded, err := ws.server.abiReader.Decode(action.Contract, action.Action, action.ActionData, action.BlockNum)
+		if abiReader != nil {
+			decoded, err := abiReader.Decode(action.Contract, action.Action, action.ActionData, action.BlockNum)
 			if err == nil && decoded != nil {
 				msg.Data = decoded
 			}
@@ -294,7 +297,11 @@ func (ws *StreamWebSocketServer) sendAction(ctx context.Context, conn *websocket
 		msg.HexData = hex.EncodeToString(action.ActionData)
 	}
 
-	return wsjson.Write(ctx, conn, msg)
+	return msg
+}
+
+func (ws *StreamWebSocketServer) sendAction(ctx context.Context, conn *websocket.Conn, action StreamedAction, decode bool) error {
+	return wsjson.Write(ctx, conn, buildWsActionMessage(action, decode, ws.server.abiReader))
 }
 
 func (ws *StreamWebSocketServer) sendCatchupComplete(ctx context.Context, conn *websocket.Conn, headSeq, libSeq uint64) error {

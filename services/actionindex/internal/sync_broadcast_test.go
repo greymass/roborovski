@@ -258,6 +258,7 @@ func TestBroadcastActions_InlinePath_UsesChainReceiver(t *testing.T) {
 		},
 	}
 	raw.SetActionData(rawData, []uint32{0}, []uint32{uint32(len(rawData))})
+	raw.SetTransactionIDs([][32]byte{{0x01}})
 
 	block := corereader.Block{
 		BlockNum:  1,
