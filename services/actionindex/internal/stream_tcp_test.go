@@ -2,10 +2,13 @@ package internal
 
 import (
 	"encoding/binary"
+	"encoding/hex"
 	"io"
 	"net"
 	"testing"
 )
+
+const tcpTestTrxID = "5b273364b825dfd58e7ac36e4014a24f1547cb5b1786a586af31c5a83daaa03b"
 
 func TestSendActionLayout(t *testing.T) {
 	serverConn, clientConn := net.Pipe()
@@ -24,6 +27,7 @@ func TestSendActionLayout(t *testing.T) {
 		ActionOrdinal:                          3,
 		CreatorActionOrdinal:                   1,
 		ClosestUnnotifiedAncestorActionOrdinal: 1,
+		TrxID:                                  tcpTestTrxID,
 		ActionData:                             []byte("abc"),
 	}
 
@@ -37,13 +41,16 @@ func TestSendActionLayout(t *testing.T) {
 		t.Fatalf("read header: %v", err)
 	}
 	length := binary.BigEndian.Uint32(header[0:4])
+	if got := header[4]; got != MsgTypeActionBatch {
+		t.Errorf("message type = %#x, want MsgTypeActionBatch (%#x)", got, MsgTypeActionBatch)
+	}
 	payload := make([]byte, length-1)
 	if _, err := io.ReadFull(clientConn, payload); err != nil {
 		t.Fatalf("read payload: %v", err)
 	}
 
-	if len(payload) != 60+3 {
-		t.Fatalf("payload len = %d, want 63", len(payload))
+	if len(payload) != 92+3 {
+		t.Fatalf("payload len = %d, want 95", len(payload))
 	}
 	if got := binary.LittleEndian.Uint32(payload[48:52]); got != 3 {
 		t.Errorf("ActionOrdinal = %d, want 3", got)
@@ -54,7 +61,24 @@ func TestSendActionLayout(t *testing.T) {
 	if got := binary.LittleEndian.Uint32(payload[56:60]); got != 1 {
 		t.Errorf("ClosestUnnotifiedAncestorActionOrdinal = %d, want 1", got)
 	}
-	if string(payload[60:]) != "abc" {
-		t.Errorf("action_data = %q, want \"abc\"", payload[60:])
+	if got := hex.EncodeToString(payload[60:92]); got != tcpTestTrxID {
+		t.Errorf("trx_id = %s, want %s", got, tcpTestTrxID)
+	}
+	if string(payload[92:]) != "abc" {
+		t.Errorf("action_data = %q, want \"abc\"", payload[92:])
+	}
+}
+
+func TestSendActionRejectsMissingTrxID(t *testing.T) {
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+	go func() {
+		_, _ = io.Copy(io.Discard, clientConn)
+	}()
+	defer serverConn.Close()
+
+	ts := &StreamTCPServer{}
+	if err := ts.sendAction(serverConn, StreamedAction{GlobalSeq: 42}, false); err == nil {
+		t.Fatal("sendAction should refuse an action without a usable trx id")
 	}
 }

@@ -145,9 +145,9 @@ const (
 
 	MaxStreamMessageSize = 10 * 1024 * 1024
 
-	ActionErrorInvalidRequest  uint16 = 1
-	ActionErrorServerSyncing   uint16 = 2
-	ActionErrorMaxClients      uint16 = 3
-	ActionErrorNoActions       uint16 = 4
+	ActionErrorInvalidRequest   uint16 = 1
+	ActionErrorServerSyncing    uint16 = 2
+	ActionErrorMaxClients       uint16 = 3
+	ActionErrorNoActions        uint16 = 4
 	ActionErrorDataInconsistent uint16 = 5
 )

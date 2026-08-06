@@ -2,6 +2,7 @@ package actionstream
 
 import (
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"io"
 	"net"
@@ -60,6 +61,7 @@ type Action struct {
 	Action                                 string
 	Receiver                               string
 	ActionData                             []byte
+	TrxID                                  string
 	CpuUsageUs                             uint32
 	NetUsageWords                          uint32
 	ActionOrdinal                          uint32
@@ -528,7 +530,7 @@ func (c *Client) writeMessage(w io.Writer, msgType uint8, payload []byte) error 
 }
 
 func (c *Client) decodeAction(payload []byte) (Action, error) {
-	if len(payload) < 60 {
+	if len(payload) < 92 {
 		return Action{}, errors.New("action payload too short")
 	}
 
@@ -543,10 +545,11 @@ func (c *Client) decodeAction(payload []byte) (Action, error) {
 	actionOrdinal := binary.LittleEndian.Uint32(payload[48:52])
 	creatorActionOrdinal := binary.LittleEndian.Uint32(payload[52:56])
 	closestUAAO := binary.LittleEndian.Uint32(payload[56:60])
+	trxID := hex.EncodeToString(payload[60:92])
 
 	var actionData []byte
-	if len(payload) > 60 {
-		actionData = payload[60:]
+	if len(payload) > 92 {
+		actionData = payload[92:]
 	}
 
 	return Action{
@@ -557,6 +560,7 @@ func (c *Client) decodeAction(payload []byte) (Action, error) {
 		Action:                                 chain.NameToString(actionName),
 		Receiver:                               chain.NameToString(receiver),
 		ActionData:                             actionData,
+		TrxID:                                  trxID,
 		CpuUsageUs:                             cpuUsageUs,
 		NetUsageWords:                          netUsageWords,
 		ActionOrdinal:                          actionOrdinal,

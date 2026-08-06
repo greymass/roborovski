@@ -3,6 +3,7 @@ package internal
 import (
 	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -284,6 +285,11 @@ func (ts *StreamTCPServer) decodeSubscribe(payload []byte) (ActionFilter, uint64
 }
 
 func (ts *StreamTCPServer) sendAction(conn net.Conn, action StreamedAction, decode bool) error {
+	trxID, err := hex.DecodeString(action.TrxID)
+	if err != nil || len(trxID) != 32 {
+		return fmt.Errorf("action seq %d has no usable trx id (%q)", action.GlobalSeq, action.TrxID)
+	}
+
 	actionData := action.ActionData
 	msgType := MsgTypeActionBatch
 
@@ -298,7 +304,7 @@ func (ts *StreamTCPServer) sendAction(conn net.Conn, action StreamedAction, deco
 		}
 	}
 
-	payload := make([]byte, 60+len(actionData))
+	payload := make([]byte, 92+len(actionData))
 
 	binary.LittleEndian.PutUint64(payload[0:8], action.GlobalSeq)
 	binary.LittleEndian.PutUint32(payload[8:12], action.BlockNum)
@@ -311,7 +317,8 @@ func (ts *StreamTCPServer) sendAction(conn net.Conn, action StreamedAction, deco
 	binary.LittleEndian.PutUint32(payload[48:52], action.ActionOrdinal)
 	binary.LittleEndian.PutUint32(payload[52:56], action.CreatorActionOrdinal)
 	binary.LittleEndian.PutUint32(payload[56:60], action.ClosestUnnotifiedAncestorActionOrdinal)
-	copy(payload[60:], actionData)
+	copy(payload[60:92], trxID)
+	copy(payload[92:], actionData)
 
 	return ts.writeMessage(conn, msgType, payload)
 }

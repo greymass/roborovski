@@ -2,10 +2,13 @@ package actionstream
 
 import (
 	"encoding/binary"
+	"encoding/hex"
 	"net"
 	"testing"
 	"time"
 )
+
+const testTrxID = "5b273364b825dfd58e7ac36e4014a24f1547cb5b1786a586af31c5a83daaa03b"
 
 func TestNewClient(t *testing.T) {
 	filter := Filter{
@@ -25,10 +28,15 @@ func TestNewClient(t *testing.T) {
 	}
 }
 
+func putTestTrxID(payload []byte) {
+	raw, _ := hex.DecodeString(testTrxID)
+	copy(payload[60:92], raw)
+}
+
 func TestDecodeAction(t *testing.T) {
 	client := NewClient("localhost:9411", Filter{}, 0, DefaultClientConfig())
 
-	payload := make([]byte, 60)
+	payload := make([]byte, 92)
 	binary.LittleEndian.PutUint64(payload[0:8], 12345)
 	binary.LittleEndian.PutUint32(payload[8:12], 1000)
 	binary.LittleEndian.PutUint32(payload[12:16], 1700000000)
@@ -40,12 +48,16 @@ func TestDecodeAction(t *testing.T) {
 	binary.LittleEndian.PutUint32(payload[48:52], 0)
 	binary.LittleEndian.PutUint32(payload[52:56], 0)
 	binary.LittleEndian.PutUint32(payload[56:60], 0)
+	putTestTrxID(payload)
 
 	action, err := client.decodeAction(payload)
 	if err != nil {
 		t.Fatalf("decodeAction failed: %v", err)
 	}
 
+	if action.TrxID != testTrxID {
+		t.Errorf("expected TrxID %s, got %s", testTrxID, action.TrxID)
+	}
 	if action.GlobalSeq != 12345 {
 		t.Errorf("expected GlobalSeq 12345, got %d", action.GlobalSeq)
 	}
@@ -66,7 +78,7 @@ func TestDecodeAction(t *testing.T) {
 func TestDecodeActionWithData(t *testing.T) {
 	client := NewClient("localhost:9411", Filter{}, 0, DefaultClientConfig())
 
-	payload := make([]byte, 68)
+	payload := make([]byte, 100)
 	binary.LittleEndian.PutUint64(payload[0:8], 100)
 	binary.LittleEndian.PutUint32(payload[8:12], 500)
 	binary.LittleEndian.PutUint32(payload[12:16], 1600000000)
@@ -78,7 +90,8 @@ func TestDecodeActionWithData(t *testing.T) {
 	binary.LittleEndian.PutUint32(payload[48:52], 0)
 	binary.LittleEndian.PutUint32(payload[52:56], 0)
 	binary.LittleEndian.PutUint32(payload[56:60], 0)
-	copy(payload[60:], []byte("testdata"))
+	putTestTrxID(payload)
+	copy(payload[92:], []byte("testdata"))
 
 	action, err := client.decodeAction(payload)
 	if err != nil {
@@ -93,10 +106,10 @@ func TestDecodeActionWithData(t *testing.T) {
 func TestDecodeActionTooShort(t *testing.T) {
 	client := NewClient("localhost:9411", Filter{}, 0, DefaultClientConfig())
 
-	payload := make([]byte, 48)
+	payload := make([]byte, 60)
 	_, err := client.decodeAction(payload)
 	if err == nil {
-		t.Error("expected error for payload shorter than 60 bytes")
+		t.Error("expected error for payload shorter than 92 bytes")
 	}
 }
 
@@ -104,8 +117,9 @@ func TestDecodeActionOrdinals(t *testing.T) {
 	client := NewClient("localhost:9411", Filter{}, 0, DefaultClientConfig())
 
 	build := func(ao, creator, closest uint32) []byte {
-		p := make([]byte, 60)
+		p := make([]byte, 92)
 		binary.LittleEndian.PutUint64(p[0:8], 7)
+		putTestTrxID(p)
 		binary.LittleEndian.PutUint32(p[48:52], ao)
 		binary.LittleEndian.PutUint32(p[52:56], creator)
 		binary.LittleEndian.PutUint32(p[56:60], closest)
@@ -681,10 +695,11 @@ func TestDialReceivesBatch(t *testing.T) {
 		payload := make([]byte, length-1)
 		conn.Read(payload)
 
-		actionPayload := make([]byte, 60)
+		actionPayload := make([]byte, 92)
 		binary.LittleEndian.PutUint64(actionPayload[0:8], 999)
 		binary.LittleEndian.PutUint32(actionPayload[8:12], 100)
 		binary.LittleEndian.PutUint32(actionPayload[12:16], 1700000000)
+		putTestTrxID(actionPayload)
 
 		batchHeader := make([]byte, 5)
 		binary.BigEndian.PutUint32(batchHeader[0:4], uint32(len(actionPayload)+1))
@@ -869,13 +884,14 @@ func TestRecvLoopReceivesActions(t *testing.T) {
 		close(serverReady)
 
 		for i := uint64(0); i < 3; i++ {
-			actionPayload := make([]byte, 60)
+			actionPayload := make([]byte, 92)
 			binary.LittleEndian.PutUint64(actionPayload[0:8], 1000+i)
 			binary.LittleEndian.PutUint32(actionPayload[8:12], uint32(100+i))
 			binary.LittleEndian.PutUint32(actionPayload[12:16], 1700000000)
 			binary.LittleEndian.PutUint64(actionPayload[16:24], 0x5530EA033C80A555)
 			binary.LittleEndian.PutUint64(actionPayload[24:32], 0x00000000A89C6360)
 			binary.LittleEndian.PutUint64(actionPayload[32:40], 0x5530EA033C80A555)
+			putTestTrxID(actionPayload)
 
 			batchHeader := make([]byte, 5)
 			binary.BigEndian.PutUint32(batchHeader[0:4], uint32(len(actionPayload)+1))
