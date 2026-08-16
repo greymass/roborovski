@@ -122,6 +122,7 @@ func (b *BlockDecodeBuffers) allocAction() *ActionTraceV1 {
 		b.Actions = newBuf
 	}
 	b.Actions = b.Actions[:n+1]
+	b.Actions[n] = ActionTraceV1{} // recycled slot may hold a stale Data/ReturnValue slice into DataBuf
 	return &b.Actions[n]
 }
 
@@ -250,6 +251,7 @@ func (b *BlockDecodeBuffers) allocTransaction() *TransactionTraceV2 {
 		b.Transactions = newBuf
 	}
 	b.Transactions = b.Transactions[:n+1]
+	b.Transactions[n] = TransactionTraceV2{}
 	return &b.Transactions[n]
 }
 
@@ -265,6 +267,7 @@ func (b *BlockDecodeBuffers) allocTransactionV3() *TransactionTraceV3 {
 		b.TransactionsV3 = newBuf
 	}
 	b.TransactionsV3 = b.TransactionsV3[:n+1]
+	b.TransactionsV3[n] = TransactionTraceV3{}
 	return &b.TransactionsV3[n]
 }
 
@@ -280,6 +283,7 @@ func (b *BlockDecodeBuffers) allocSignature() *Signature {
 		b.Signatures = newBuf
 	}
 	b.Signatures = b.Signatures[:n+1]
+	b.Signatures[n] = Signature{}
 	return &b.Signatures[n]
 }
 
