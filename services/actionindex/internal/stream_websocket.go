@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -35,6 +36,7 @@ type wsActionMessage struct {
 	Action    string         `json:"action"`
 	Receiver  string         `json:"receiver"`
 	TrxID     string         `json:"trx_id"`
+	SubSeq    uint64         `json:"sub_seq"`
 	HexData   string         `json:"hex_data,omitempty"`
 	Data      map[string]any `json:"data,omitempty"`
 }
@@ -62,6 +64,7 @@ type StreamWebSocketServer struct {
 	maxConns int
 
 	httpServer *http.Server
+	listener   net.Listener
 	clients    map[uint64]*wsStreamClient
 	clientsMu  sync.RWMutex
 	nextID     atomic.Uint64
@@ -92,20 +95,32 @@ func (ws *StreamWebSocketServer) Listen(address string) error {
 	mux.HandleFunc("/", ws.handleWebSocket)
 	mux.HandleFunc("/stream", ws.handleWebSocket)
 
+	ln, err := net.Listen("tcp", address)
+	if err != nil {
+		return err
+	}
+	ws.listener = ln
+
 	ws.httpServer = &http.Server{
-		Addr:         address,
 		Handler:      mux,
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 	}
 
 	go func() {
-		if err := ws.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := ws.httpServer.Serve(ln); err != nil && err != http.ErrServerClosed {
 			logger.Warning("WebSocket server error: %v", err)
 		}
 	}()
 
 	return nil
+}
+
+func (ws *StreamWebSocketServer) Addr() net.Addr {
+	if ws.listener == nil {
+		return nil
+	}
+	return ws.listener.Addr()
 }
 
 func (ws *StreamWebSocketServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
@@ -198,9 +213,11 @@ func (ws *StreamWebSocketServer) handleWebSocket(w http.ResponseWriter, r *http.
 		ws.recvLoop(ctx, wsc)
 	}()
 
+	var subSeq uint64
 	err = client.Run(ctx,
 		func(action StreamedAction) error {
-			return ws.sendAction(ctx, conn, action, decode)
+			subSeq++
+			return ws.sendAction(ctx, conn, action, decode, subSeq)
 		},
 		func() error {
 			head, lib := ws.server.broadcaster.GetState()
@@ -271,7 +288,7 @@ func (ws *StreamWebSocketServer) removeClient(wsc *wsStreamClient) {
 		wsc.id, actionsSent, uptime.Round(time.Second), connCount, ws.maxConns)
 }
 
-func buildWsActionMessage(action StreamedAction, decode bool, abiReader *abicache.Reader) wsActionMessage {
+func buildWsActionMessage(action StreamedAction, decode bool, abiReader *abicache.Reader, subSeq uint64) wsActionMessage {
 	msg := wsActionMessage{
 		Type:      "action",
 		GlobalSeq: action.GlobalSeq,
@@ -281,6 +298,7 @@ func buildWsActionMessage(action StreamedAction, decode bool, abiReader *abicach
 		Action:    chain.NameToString(action.Action),
 		Receiver:  chain.NameToString(action.Receiver),
 		TrxID:     action.TrxID,
+		SubSeq:    subSeq,
 	}
 
 	if decode && len(action.ActionData) > 0 {
@@ -300,8 +318,8 @@ func buildWsActionMessage(action StreamedAction, decode bool, abiReader *abicach
 	return msg
 }
 
-func (ws *StreamWebSocketServer) sendAction(ctx context.Context, conn *websocket.Conn, action StreamedAction, decode bool) error {
-	return wsjson.Write(ctx, conn, buildWsActionMessage(action, decode, ws.server.abiReader))
+func (ws *StreamWebSocketServer) sendAction(ctx context.Context, conn *websocket.Conn, action StreamedAction, decode bool, subSeq uint64) error {
+	return wsjson.Write(ctx, conn, buildWsActionMessage(action, decode, ws.server.abiReader, subSeq))
 }
 
 func (ws *StreamWebSocketServer) sendCatchupComplete(ctx context.Context, conn *websocket.Conn, headSeq, libSeq uint64) error {

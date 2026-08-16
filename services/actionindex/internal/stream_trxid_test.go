@@ -154,7 +154,7 @@ func TestBroadcastActions_InlinePath_CarriesTrxID(t *testing.T) {
 }
 
 func TestBuildWsActionMessage_CarriesTrxID(t *testing.T) {
-	msg := buildWsActionMessage(StreamedAction{GlobalSeq: 42, TrxID: testTrxID}, false, nil)
+	msg := buildWsActionMessage(StreamedAction{GlobalSeq: 42, TrxID: testTrxID}, false, nil, 0)
 	if msg.TrxID != testTrxID {
 		t.Fatalf("TrxID = %q, want %q", msg.TrxID, testTrxID)
 	}
@@ -169,7 +169,7 @@ func TestBuildWsActionMessage_CarriesTrxID(t *testing.T) {
 }
 
 func TestBuildWsActionMessage_TrxIDIsUnconditional(t *testing.T) {
-	encoded, err := json.Marshal(buildWsActionMessage(StreamedAction{GlobalSeq: 42}, false, nil))
+	encoded, err := json.Marshal(buildWsActionMessage(StreamedAction{GlobalSeq: 42}, false, nil, 0))
 	if err != nil {
 		t.Fatalf("marshal error: %v", err)
 	}
