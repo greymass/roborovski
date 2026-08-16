@@ -22,6 +22,8 @@ type StreamServer struct {
 	maxClients        int
 	heartbeatInterval int
 
+	catchupSem chan struct{}
+
 	closeChan chan struct{}
 	closed    atomic.Bool
 	wg        sync.WaitGroup
@@ -34,7 +36,13 @@ func NewStreamServer(
 	abiReader *abicache.Reader,
 	maxClients int,
 	heartbeatInterval int,
+	maxCatchups int,
 ) *StreamServer {
+	// maxCatchups bounds server-wide index re-serve work; excess clients wait for a slot, 0 means unlimited.
+	var catchupSem chan struct{}
+	if maxCatchups > 0 {
+		catchupSem = make(chan struct{}, maxCatchups)
+	}
 	return &StreamServer{
 		broadcaster:       broadcaster,
 		indexes:           indexes,
@@ -42,6 +50,7 @@ func NewStreamServer(
 		abiReader:         abiReader,
 		maxClients:        maxClients,
 		heartbeatInterval: heartbeatInterval,
+		catchupSem:        catchupSem,
 		closeChan:         make(chan struct{}),
 	}
 }

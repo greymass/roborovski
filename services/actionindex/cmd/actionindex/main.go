@@ -378,6 +378,7 @@ func main() {
 				abiReader,
 				cfg.StreamMaxClients,
 				cfg.StreamHeartbeatInterval,
+				cfg.StreamMaxCatchups,
 			)
 
 			if cfg.StreamSocket != "none" {

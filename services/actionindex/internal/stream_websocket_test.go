@@ -33,7 +33,7 @@ func newTestWSServer(t *testing.T) (*StreamWebSocketServer, *ActionBroadcaster, 
 	t.Helper()
 	b := NewActionBroadcaster()
 	b.SetLiveMode(true)
-	srv := NewStreamServer(b, nil, nil, nil, 10, 30)
+	srv := NewStreamServer(b, nil, nil, nil, 10, 30, 4)
 	wss := NewStreamWebSocketServer(srv, 10)
 	if err := wss.Listen("127.0.0.1:0"); err != nil {
 		t.Fatal(err)

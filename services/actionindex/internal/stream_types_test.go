@@ -71,9 +71,6 @@ func TestSubscription_ResetCounters(t *testing.T) {
 	if got := s.inFlight(); got != 0 {
 		t.Fatalf("inFlight() after reset = %d, want 0", got)
 	}
-	if s.sendCount.Load() != 0 {
-		t.Fatalf("sendCount not reset: %d", s.sendCount.Load())
-	}
 }
 
 func TestActionFilter_Matches_ContractOnly(t *testing.T) {

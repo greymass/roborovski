@@ -38,6 +38,7 @@ func NewStreamCatchup(
 	}
 }
 
+// Run streams index matches in [c.startSeq, c.endSeq], both ends inclusive.
 func (c *StreamCatchup) Run(ctx context.Context, sendAction func(StreamedAction) error) error {
 	if c.canUseContractActionIndex() {
 		return c.streamWithContractActionIndex(ctx, sendAction)

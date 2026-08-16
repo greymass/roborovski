@@ -4,6 +4,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/greymass/roborovski/libraries/logger"
 )
 
 type ActionFilter struct {
@@ -73,21 +75,13 @@ type Subscription struct {
 	ackMu       sync.Mutex
 	pendingSeqs []uint64
 
-	// Catchup mode - when true, broadcasts are skipped (gap filled from index after)
-	catchingUp atomic.Bool
-
-	// For logging only.
-	sendCount      atomic.Uint64
-	lastAckedSeq   atomic.Uint64
-	blockedCount   atomic.Uint64
-	lastBlockedLog atomic.Int64
+	resyncSignalled atomic.Bool
 }
 
 func (s *Subscription) recordSent(globalSeq uint64) {
 	s.ackMu.Lock()
 	s.pendingSeqs = append(s.pendingSeqs, globalSeq)
 	s.ackMu.Unlock()
-	s.sendCount.Add(1)
 }
 
 // inFlight returns the number of actions sent but not yet acked.
@@ -106,22 +100,10 @@ func (s *Subscription) ResetCounters() {
 	s.ackMu.Lock()
 	s.pendingSeqs = s.pendingSeqs[:0]
 	s.ackMu.Unlock()
-	s.sendCount.Store(0)
-	s.lastAckedSeq.Store(0)
-}
-
-func (s *Subscription) SetCatchingUp(catching bool) {
-	s.catchingUp.Store(catching)
-}
-
-func (s *Subscription) IsCatchingUp() bool {
-	return s.catchingUp.Load()
 }
 
 // Ack releases backpressure for every in-flight action at or below globalSeq.
 func (s *Subscription) Ack(globalSeq uint64) {
-	s.lastAckedSeq.Store(globalSeq)
-
 	s.ackMu.Lock()
 	i := 0
 	for i < len(s.pendingSeqs) && s.pendingSeqs[i] <= globalSeq {
@@ -132,6 +114,44 @@ func (s *Subscription) Ack(globalSeq uint64) {
 		s.pendingSeqs = s.pendingSeqs[:remaining]
 	}
 	s.ackMu.Unlock()
+}
+
+// tryDeliver owns the delivery policy: nothing sends past a latched resync, and a blocked window or full buffer signals resync instead of dropping silently.
+func (s *Subscription) tryDeliver(action StreamedAction, matchedVia []uint64) bool {
+	if s.resyncSignalled.Load() {
+		return false
+	}
+	if !s.filter.Matches(action, matchedVia) {
+		logger.Printf("debug-stream", "Subscription %d filter rejected: contract=%x receiver=%x action=%x matchedVia=%v (filter: contracts=%d receivers=%d actions=%d)",
+			s.id, action.Contract, action.Receiver, action.Action, matchedVia,
+			len(s.filter.Contracts), len(s.filter.Receivers), len(s.filter.Actions))
+		return false
+	}
+	if !s.canSend() {
+		s.signalResync("ack window exceeded")
+		return false
+	}
+	select {
+	case s.sendCh <- action:
+		s.recordSent(action.GlobalSeq)
+		return true
+	default:
+		s.signalResync("send buffer full")
+		return false
+	}
+}
+
+// signalResync tells the client to reconnect and resume; catch-up re-serves from the index.
+func (s *Subscription) signalResync(reason string) {
+	if s.resyncSignalled.Load() {
+		return
+	}
+	select {
+	case s.errorCh <- StreamError{Code: ActionErrorResyncRequired, Message: "resync required: " + reason}:
+		s.resyncSignalled.Store(true)
+		logger.Printf("stream", "Subscription %d resync required: %s", s.id, reason)
+	default:
+	}
 }
 
 const (
@@ -150,4 +170,5 @@ const (
 	ActionErrorMaxClients       uint16 = 3
 	ActionErrorNoActions        uint16 = 4
 	ActionErrorDataInconsistent uint16 = 5
+	ActionErrorResyncRequired   uint16 = 6
 )

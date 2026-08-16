@@ -88,31 +88,8 @@ func (b *ActionBroadcaster) Broadcast(action StreamedAction, matchedVia []uint64
 
 	var delivered bool
 	for _, sub := range b.subs {
-		if sub.IsCatchingUp() {
-			continue
-		}
-		if !sub.filter.Matches(action, matchedVia) {
-			logger.Printf("debug-stream", "Subscription %d filter rejected: contract=%x receiver=%x action=%x matchedVia=%v (filter: contracts=%d receivers=%d actions=%d)",
-				sub.id, action.Contract, action.Receiver, action.Action, matchedVia,
-				len(sub.filter.Contracts), len(sub.filter.Receivers), len(sub.filter.Actions))
-			continue
-		}
-		if !sub.canSend() {
-			blocked := sub.blockedCount.Add(1)
-			now := time.Now().Unix()
-			lastLog := sub.lastBlockedLog.Load()
-			if blocked == 1 || (now-lastLog >= 5 && sub.lastBlockedLog.CompareAndSwap(lastLog, now)) {
-				logger.Printf("stream", "Subscription %d backpressure: blocked %d actions (inFlight=%d, sent=%d, lastAck=%d, seq=%d)",
-					sub.id, blocked, sub.inFlight(), sub.sendCount.Load(), sub.lastAckedSeq.Load(), action.GlobalSeq)
-			}
-			continue
-		}
-		select {
-		case sub.sendCh <- action:
-			sub.recordSent(action.GlobalSeq)
+		if sub.tryDeliver(action, matchedVia) {
 			delivered = true
-		default:
-			logger.Printf("stream", "Subscription %d buffer full, dropping action %d", sub.id, action.GlobalSeq)
 		}
 	}
 	return delivered
@@ -142,6 +119,11 @@ func (b *ActionBroadcaster) SetLiveMode(live bool) {
 	wasLive := b.liveMode.Swap(live)
 	if live && !wasLive {
 		logger.Printf("stream", "Live streaming enabled")
+		b.mu.RLock()
+		for _, sub := range b.subs {
+			sub.signalResync("live broadcasting resumed")
+		}
+		b.mu.RUnlock()
 	} else if !live && wasLive {
 		logger.Printf("stream", "Live streaming disabled (syncing)")
 	}

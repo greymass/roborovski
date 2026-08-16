@@ -610,8 +610,13 @@ func (p *AccountHistoryProcessor) ProcessBatch(blocks []corereader.Block) error 
 		p.lastMaxSeq = lastBlock.MaxSeq
 	}
 
-	if p.syncer.broadcaster != nil && p.syncer.broadcaster.IsLiveMode() && lastBlock.MaxSeq > 0 {
-		p.syncer.broadcaster.SetState(lastBlock.MaxSeq, lastBlock.MaxSeq)
+	if p.syncer.broadcaster != nil && p.syncer.broadcaster.IsLiveMode() {
+		if lastBlock.MaxSeq > 0 {
+			p.syncer.broadcaster.SetState(lastBlock.MaxSeq, lastBlock.MaxSeq)
+		}
+		if subs := p.syncer.broadcaster.SubscriberCount(); subs > 0 {
+			logger.Warning("ProcessBatch while live with %d subscribers: batch-indexed actions are not broadcast", subs)
+		}
 	}
 
 	if p.timing != nil {

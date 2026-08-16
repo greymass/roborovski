@@ -23,6 +23,7 @@ type Config struct {
 	// Streaming
 	StreamMaxClients        int `name:"stream-max-clients" default:"100" help:"Maximum concurrent streaming clients"`
 	StreamHeartbeatInterval int `name:"stream-heartbeat" default:"30" help:"Streaming heartbeat interval in seconds"`
+	StreamMaxCatchups       int `name:"stream-max-catchups" default:"4" help:"Maximum concurrent catch-up phases (0 = unlimited)"`
 
 	// Performance tuning
 	BlockCacheSizeMB      int64 `name:"block-cache-size-mb" alias:"block-cache-size" default:"2048" help:"Cache size in MB for parsed block data. 0 to disable."`
