@@ -197,6 +197,7 @@ type AccountHistoryProcessor struct {
 	lastMaxSeq         uint64
 	timing             *SyncTiming
 	batchBuf           []ActionEntry
+	pending            []corereader.Block
 }
 
 func NewAccountHistoryProcessor(syncer *Syncer) *AccountHistoryProcessor {
@@ -251,10 +252,9 @@ func (p *AccountHistoryProcessor) ProcessBlock(block corereader.Block) error {
 		p.timing.RecordIndexAdd(time.Since(indexAddStart))
 	}
 
-	if p.syncer.broadcaster != nil && p.syncer.broadcaster.IsLiveMode() && actionCount > 0 {
-		if err := p.broadcastActions(block); err != nil {
-			return err
-		}
+	// Head and live sends wait for the commit that makes these actions readable.
+	if p.syncer.broadcaster != nil && p.syncer.broadcaster.IsLiveMode() && (block.MaxSeq > 0 || actionCount > 0) {
+		p.pending = append(p.pending, block)
 	}
 
 	var blockTimeStart time.Time
@@ -272,10 +272,6 @@ func (p *AccountHistoryProcessor) ProcessBlock(block corereader.Block) error {
 	p.lastProcessedBlock = block.BlockNum
 	if block.MaxSeq > p.lastMaxSeq {
 		p.lastMaxSeq = block.MaxSeq
-	}
-
-	if p.syncer.broadcaster != nil && p.syncer.broadcaster.IsLiveMode() && block.MaxSeq > 0 {
-		p.syncer.broadcaster.SetState(block.MaxSeq, block.MaxSeq)
 	}
 
 	if p.timing != nil {
@@ -483,6 +479,7 @@ func (p *AccountHistoryProcessor) Commit(currentBlock uint32, bulkMode bool) err
 	err := p.syncer.indexes.CommitWithTiming(currentBlock, currentBlock, withSync, p.timing)
 
 	if err != nil {
+		p.dropPending("commit failed")
 		return err
 	}
 
@@ -491,7 +488,32 @@ func (p *AccountHistoryProcessor) Commit(currentBlock uint32, bulkMode bool) err
 	}
 
 	p.blocksProcessed = 0
+	return p.publishPending()
+}
+
+// publishPending advertises head and broadcasts only work the commit has made readable.
+func (p *AccountHistoryProcessor) publishPending() error {
+	for _, block := range p.pending {
+		if block.MaxSeq > 0 {
+			p.syncer.broadcaster.SetState(block.MaxSeq, block.MaxSeq)
+		}
+		if err := p.broadcastActions(block); err != nil {
+			p.dropPending("broadcast failed")
+			return err
+		}
+	}
+	clear(p.pending)
+	p.pending = p.pending[:0]
 	return nil
+}
+
+// dropPending abandons unpublished blocks; their actions reach clients only through a later catch-up.
+func (p *AccountHistoryProcessor) dropPending(reason string) {
+	if len(p.pending) > 0 {
+		logger.Printf("sync", "Dropping %d pending stream blocks: %s", len(p.pending), reason)
+	}
+	clear(p.pending)
+	p.pending = p.pending[:0]
 }
 
 func (p *AccountHistoryProcessor) Flush() error {
