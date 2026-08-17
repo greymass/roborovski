@@ -7,10 +7,10 @@ import (
 func DecodeBlockTraceV2Slice(d *SliceDecoder, bufs *BlockDecodeBuffers) (*BlockTraceV2, error) {
 	bt := &BlockTraceV2{}
 
-	d.Context = "block_header"
+	d.Ctx = DecodeCtx{Stage: "block_header"}
 	bt.ID = d.ReadChecksum256()
 	bt.Number = d.ReadUint32()
-	d.Context = fmt.Sprintf("block_%d_header", bt.Number)
+	d.Ctx = DecodeCtx{Stage: "header", Block: bt.Number}
 	bt.PreviousID = d.ReadChecksum256()
 	bt.Timestamp = d.ReadUint32()
 	bt.Producer = d.ReadUint64()
@@ -20,12 +20,12 @@ func DecodeBlockTraceV2Slice(d *SliceDecoder, bufs *BlockDecodeBuffers) (*BlockT
 
 	bt.TransactionsVariant = d.ReadVariantIndex()
 	txCount := d.ReadVarUint32()
-	d.Context = fmt.Sprintf("block_%d_txcount_%d", bt.Number, txCount)
+	d.Ctx = DecodeCtx{Stage: "txcount", Block: bt.Number, N: txCount}
 
 	if bt.TransactionsVariant == 0 {
 		txStart := len(bufs.Transactions)
 		for i := uint32(0); i < txCount; i++ {
-			d.Context = fmt.Sprintf("block_%d_tx_%d/%d", bt.Number, i, txCount)
+			d.Ctx = DecodeCtx{Stage: "tx", Block: bt.Number, Tx: i, TxCount: txCount}
 			tx := bufs.allocTransaction()
 			if err := decodeTransactionTraceV2Slice(d, tx, bufs, bt.Number, i, txCount); err != nil {
 				return nil, fmt.Errorf("transaction %d: %w", i, err)
@@ -35,7 +35,7 @@ func DecodeBlockTraceV2Slice(d *SliceDecoder, bufs *BlockDecodeBuffers) (*BlockT
 	} else if bt.TransactionsVariant == 1 {
 		txStart := len(bufs.TransactionsV3)
 		for i := uint32(0); i < txCount; i++ {
-			d.Context = fmt.Sprintf("block_%d_tx_%d/%d_v3", bt.Number, i, txCount)
+			d.Ctx = DecodeCtx{Stage: "tx_v3", Block: bt.Number, Tx: i, TxCount: txCount}
 			tx := bufs.allocTransactionV3()
 			if err := decodeTransactionTraceV3Slice(d, tx, bufs, bt.Number, i, txCount); err != nil {
 				return nil, fmt.Errorf("transaction %d: %w", i, err)
@@ -58,22 +58,22 @@ func decodeTransactionTraceV2Slice(d *SliceDecoder, tx *TransactionTraceV2, bufs
 	}
 
 	actionCount := d.ReadVarUint32()
-	d.Context = fmt.Sprintf("block_%d_tx_%d/%d_actions_%d", blockNum, txIdx, txCount, actionCount)
+	d.Ctx = DecodeCtx{Stage: "actions", Block: blockNum, Tx: txIdx, TxCount: txCount, N: actionCount}
 	actStart := len(bufs.Actions)
 	for i := uint32(0); i < actionCount; i++ {
-		d.Context = fmt.Sprintf("block_%d_tx_%d/%d_action_%d/%d", blockNum, txIdx, txCount, i, actionCount)
+		d.Ctx = DecodeCtx{Stage: "action", Block: blockNum, Tx: txIdx, TxCount: txCount, Act: i, ActCount: actionCount}
 		act := bufs.allocAction()
 		decodeActionTraceV1Slice(d, act, bufs, blockNum, txIdx, i, actionCount)
 	}
 	tx.Actions = bufs.Actions[actStart:]
 
-	d.Context = fmt.Sprintf("block_%d_tx_%d/%d_status", blockNum, txIdx, txCount)
+	d.Ctx = DecodeCtx{Stage: "status", Block: blockNum, Tx: txIdx, TxCount: txCount}
 	tx.Status = d.ReadUint8()
 	tx.CpuUsageUs = d.ReadUint32()
 	tx.NetUsageWords = d.ReadVarUint32()
 
 	sigCount := d.ReadVarUint32()
-	d.Context = fmt.Sprintf("block_%d_tx_%d/%d_sigs_%d", blockNum, txIdx, txCount, sigCount)
+	d.Ctx = DecodeCtx{Stage: "sigs", Block: blockNum, Tx: txIdx, TxCount: txCount, N: sigCount}
 	sigStart := len(bufs.Signatures)
 	for i := uint32(0); i < sigCount; i++ {
 		sig := bufs.allocSignature()
@@ -84,7 +84,7 @@ func decodeTransactionTraceV2Slice(d *SliceDecoder, tx *TransactionTraceV2, bufs
 		tx.Signatures[i] = &bufs.Signatures[sigStart+int(i)]
 	}
 
-	d.Context = fmt.Sprintf("block_%d_tx_%d/%d_header", blockNum, txIdx, txCount)
+	d.Ctx = DecodeCtx{Stage: "tx_header", Block: blockNum, Tx: txIdx, TxCount: txCount}
 	decodeTransactionHeaderSlice(d, &tx.TrxHeader)
 
 	return nil
@@ -95,7 +95,7 @@ func decodeTransactionTraceV3Slice(d *SliceDecoder, tx *TransactionTraceV3, bufs
 		return err
 	}
 
-	d.Context = fmt.Sprintf("block_%d_tx_%d/%d_v3_extra", blockNum, txIdx, txCount)
+	d.Ctx = DecodeCtx{Stage: "v3_extra", Block: blockNum, Tx: txIdx, TxCount: txCount}
 	tx.BlockNum = d.ReadUint32()
 	tx.BlockTime = d.ReadUint32()
 
@@ -110,7 +110,7 @@ func decodeTransactionTraceV3Slice(d *SliceDecoder, tx *TransactionTraceV3, bufs
 func decodeActionTraceV1Slice(d *SliceDecoder, act *ActionTraceV1, bufs *BlockDecodeBuffers, blockNum uint32, txIdx uint32, actIdx uint32, actCount uint32) {
 	decodeActionTraceSlice(d, &act.ActionTrace, bufs, blockNum, txIdx, actIdx, actCount)
 
-	d.Context = fmt.Sprintf("block_%d_tx_%d_action_%d/%d_return", blockNum, txIdx, actIdx, actCount)
+	d.Ctx = DecodeCtx{Stage: "return", Block: blockNum, Tx: txIdx, Act: actIdx, ActCount: actCount}
 	returnValueLen := d.ReadVarUint32()
 	if returnValueLen > 0 {
 		act.ReturnValue = bufs.allocReturn(returnValueLen)
@@ -119,18 +119,18 @@ func decodeActionTraceV1Slice(d *SliceDecoder, act *ActionTraceV1, bufs *BlockDe
 }
 
 func decodeActionTraceSlice(d *SliceDecoder, act *ActionTrace, bufs *BlockDecodeBuffers, blockNum uint32, txIdx uint32, actIdx uint32, actCount uint32) {
-	d.Context = fmt.Sprintf("block_%d_tx_%d_action_%d/%d_ordinals", blockNum, txIdx, actIdx, actCount)
+	d.Ctx = DecodeCtx{Stage: "ordinals", Block: blockNum, Tx: txIdx, Act: actIdx, ActCount: actCount}
 	act.ActionOrdinal = d.ReadVarUint32()
 	act.CreatorActionOrdinal = d.ReadVarUint32()
 	act.ClosestUnnotifiedAncestorActionOrdinal = d.ReadVarUint32()
 
-	d.Context = fmt.Sprintf("block_%d_tx_%d_action_%d/%d_receipt", blockNum, txIdx, actIdx, actCount)
+	d.Ctx.Stage = "receipt"
 	act.ReceiptReceiver = d.ReadUint64()
 	act.GlobalSequence = d.ReadUint64()
 	act.RecvSequence = d.ReadUint64()
 
 	authSeqCount := d.ReadVarUint32()
-	d.Context = fmt.Sprintf("block_%d_tx_%d_action_%d/%d_authseq_%d", blockNum, txIdx, actIdx, actCount, authSeqCount)
+	d.Ctx.Stage, d.Ctx.N = "authseq", authSeqCount
 	authSeqStart := bufs.allocAuthSeq(authSeqCount)
 	for i := uint32(0); i < authSeqCount; i++ {
 		bufs.AuthSeqKeys[authSeqStart+i] = d.ReadUint64()
@@ -139,7 +139,7 @@ func decodeActionTraceSlice(d *SliceDecoder, act *ActionTrace, bufs *BlockDecode
 	bufs.recordAuthSeqRange(authSeqStart, authSeqCount)
 	act.AuthSequence = nil
 
-	d.Context = fmt.Sprintf("block_%d_tx_%d_action_%d/%d_codeabi", blockNum, txIdx, actIdx, actCount)
+	d.Ctx.Stage = "codeabi"
 	act.CodeSequence = d.ReadVarUint32()
 	act.AbiSequence = d.ReadVarUint32()
 	act.Receiver = d.ReadUint64()
@@ -147,7 +147,7 @@ func decodeActionTraceSlice(d *SliceDecoder, act *ActionTrace, bufs *BlockDecode
 	act.Name = d.ReadUint64()
 
 	authCount := d.ReadVarUint32()
-	d.Context = fmt.Sprintf("block_%d_tx_%d_action_%d/%d_auths_%d", blockNum, txIdx, actIdx, actCount, authCount)
+	d.Ctx.Stage, d.Ctx.N = "auths", authCount
 	act.Authorization = bufs.allocAuths(authCount)
 	for i := uint32(0); i < authCount; i++ {
 		act.Authorization[i].Account = d.ReadUint64()
@@ -155,18 +155,18 @@ func decodeActionTraceSlice(d *SliceDecoder, act *ActionTrace, bufs *BlockDecode
 	}
 
 	dataLen := d.ReadVarUint32()
-	d.Context = fmt.Sprintf("block_%d_tx_%d_action_%d/%d_data_%d", blockNum, txIdx, actIdx, actCount, dataLen)
+	d.Ctx.Stage, d.Ctx.N = "data", dataLen
 	if dataLen > 0 {
 		act.Data = bufs.allocData(dataLen)
 		copy(act.Data, d.ReadBytesRef(int(dataLen)))
 	}
 
-	d.Context = fmt.Sprintf("block_%d_tx_%d_action_%d/%d_elapsed", blockNum, txIdx, actIdx, actCount)
+	d.Ctx.Stage = "elapsed"
 	act.ContextFree = d.ReadBool()
 	act.Elapsed = d.ReadInt64()
 
 	deltaCount := d.ReadVarUint32()
-	d.Context = fmt.Sprintf("block_%d_tx_%d_action_%d/%d_deltas_%d", blockNum, txIdx, actIdx, actCount, deltaCount)
+	d.Ctx.Stage, d.Ctx.N = "deltas", deltaCount
 	act.AccountRamDeltas = bufs.allocDeltas(deltaCount)
 	for i := uint32(0); i < deltaCount; i++ {
 		act.AccountRamDeltas[i].Account = d.ReadUint64()
