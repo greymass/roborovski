@@ -142,8 +142,7 @@ func (ts *StreamTCPServer) handleConnection(conn net.Conn) {
 
 	logger.Printf("stream", "TCP client %d connected (%d/%d)", clientID, connCount, ts.maxConns)
 
-	head, lib := ts.server.broadcaster.GetState()
-	if err := ts.sendHeartbeat(conn, head, lib); err != nil {
+	if err := ts.sendHeartbeat(conn); err != nil {
 		return
 	}
 
@@ -161,16 +160,14 @@ func (ts *StreamTCPServer) handleConnection(conn net.Conn) {
 			return ts.sendAction(conn, action, decode)
 		},
 		func() error {
-			head, lib := ts.server.broadcaster.GetState()
-			return ts.sendCatchupComplete(conn, head, lib)
+			return ts.sendCatchupComplete(conn)
 		},
 		func(streamErr StreamError) error {
 			ts.sendError(conn, streamErr.Code, streamErr.Message)
 			return fmt.Errorf("stream error [%d]: %s", streamErr.Code, streamErr.Message)
 		},
 		func() error {
-			head, lib := ts.server.broadcaster.GetState()
-			return ts.sendHeartbeat(conn, head, lib)
+			return ts.sendHeartbeat(conn)
 		},
 	)
 
@@ -323,18 +320,24 @@ func (ts *StreamTCPServer) sendAction(conn net.Conn, action StreamedAction, deco
 	return ts.writeMessage(conn, msgType, payload)
 }
 
-func (ts *StreamTCPServer) sendHeartbeat(conn net.Conn, headSeq, libSeq uint64) error {
-	payload := make([]byte, 16)
-	binary.LittleEndian.PutUint64(payload[0:8], headSeq)
-	binary.LittleEndian.PutUint64(payload[8:16], libSeq)
-	return ts.writeMessage(conn, MsgTypeActionHeartbeat, payload)
+func (ts *StreamTCPServer) sendHeartbeat(conn net.Conn) error {
+	return ts.writeMessage(conn, MsgTypeActionHeartbeat, ts.positionPayload())
 }
 
-func (ts *StreamTCPServer) sendCatchupComplete(conn net.Conn, headSeq, libSeq uint64) error {
-	payload := make([]byte, 16)
+func (ts *StreamTCPServer) sendCatchupComplete(conn net.Conn) error {
+	return ts.writeMessage(conn, MsgTypeCatchupComplete, ts.positionPayload())
+}
+
+// Payload layout: head_seq u64, lib_seq u64, head_block u32, head_block_time u32 (block timestamp slot).
+func (ts *StreamTCPServer) positionPayload() []byte {
+	headSeq, libSeq := ts.server.broadcaster.GetState()
+	blockNum, blockTime := ts.server.broadcaster.GetBlock()
+	payload := make([]byte, 24)
 	binary.LittleEndian.PutUint64(payload[0:8], headSeq)
 	binary.LittleEndian.PutUint64(payload[8:16], libSeq)
-	return ts.writeMessage(conn, MsgTypeCatchupComplete, payload)
+	binary.LittleEndian.PutUint32(payload[16:20], blockNum)
+	binary.LittleEndian.PutUint32(payload[20:24], blockTime)
+	return payload
 }
 
 func (ts *StreamTCPServer) sendError(conn net.Conn, code uint16, message string) {

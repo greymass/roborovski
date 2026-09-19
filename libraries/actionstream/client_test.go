@@ -1422,3 +1422,33 @@ func TestRecvLoopReconnectMaxDelayBackoff(t *testing.T) {
 
 	client.Close()
 }
+
+func TestStorePositionReadsOptionalBlock(t *testing.T) {
+	client := NewClient("localhost:9411", Filter{}, 0, DefaultClientConfig())
+
+	legacy := make([]byte, 16)
+	binary.LittleEndian.PutUint64(legacy[0:8], 500)
+	binary.LittleEndian.PutUint64(legacy[8:16], 400)
+	client.storePosition(legacy)
+	if client.GetHeadSeq() != 500 || client.GetLIBSeq() != 400 {
+		t.Fatalf("legacy payload: head=%d lib=%d", client.GetHeadSeq(), client.GetLIBSeq())
+	}
+	if num, ts := client.GetHeadBlock(); num != 0 || ts != 0 {
+		t.Fatalf("legacy payload set block %d/%d", num, ts)
+	}
+
+	full := make([]byte, 24)
+	binary.LittleEndian.PutUint64(full[0:8], 600)
+	binary.LittleEndian.PutUint64(full[8:16], 600)
+	binary.LittleEndian.PutUint32(full[16:20], 287744180)
+	binary.LittleEndian.PutUint32(full[20:24], 1687000000)
+	client.storePosition(full)
+	if num, ts := client.GetHeadBlock(); num != 287744180 || ts != 1687000000 {
+		t.Fatalf("full payload: block=%d time=%d", num, ts)
+	}
+
+	client.storePosition([]byte{1, 2, 3})
+	if client.GetHeadSeq() != 600 {
+		t.Fatalf("short payload changed head seq to %d", client.GetHeadSeq())
+	}
+}

@@ -194,6 +194,7 @@ type AccountHistoryProcessor struct {
 	syncer             *Syncer
 	blocksProcessed    int
 	lastProcessedBlock uint32
+	lastBlockTime      uint32
 	lastMaxSeq         uint64
 	timing             *SyncTiming
 	batchBuf           []ActionEntry
@@ -270,6 +271,7 @@ func (p *AccountHistoryProcessor) ProcessBlock(block corereader.Block) error {
 
 	p.blocksProcessed++
 	p.lastProcessedBlock = block.BlockNum
+	p.lastBlockTime = block.BlockTime
 	if block.MaxSeq > p.lastMaxSeq {
 		p.lastMaxSeq = block.MaxSeq
 	}
@@ -497,6 +499,7 @@ func (p *AccountHistoryProcessor) publishPending() error {
 		if block.MaxSeq > 0 {
 			p.syncer.broadcaster.SetState(block.MaxSeq, block.MaxSeq)
 		}
+		p.syncer.broadcaster.SetBlock(block.BlockNum, block.BlockTime)
 		if err := p.broadcastActions(block); err != nil {
 			p.dropPending("broadcast failed")
 			return err
@@ -530,6 +533,7 @@ func (p *AccountHistoryProcessor) Flush() error {
 			headSeq = p.syncer.indexes.MaxSeq()
 		}
 		p.syncer.broadcaster.SetState(headSeq, headSeq)
+		p.syncer.broadcaster.SetBlock(p.lastProcessedBlock, p.lastBlockTime)
 		p.syncer.broadcaster.SetLiveMode(true)
 		logger.Printf("sync", "Broadcaster initialized with headSeq=%d", headSeq)
 	}
@@ -628,6 +632,7 @@ func (p *AccountHistoryProcessor) ProcessBatch(blocks []corereader.Block) error 
 	p.blocksProcessed += len(blocks)
 	lastBlock := blocks[len(blocks)-1]
 	p.lastProcessedBlock = lastBlock.BlockNum
+	p.lastBlockTime = lastBlock.BlockTime
 	if lastBlock.MaxSeq > p.lastMaxSeq {
 		p.lastMaxSeq = lastBlock.MaxSeq
 	}
@@ -636,6 +641,7 @@ func (p *AccountHistoryProcessor) ProcessBatch(blocks []corereader.Block) error 
 		if lastBlock.MaxSeq > 0 {
 			p.syncer.broadcaster.SetState(lastBlock.MaxSeq, lastBlock.MaxSeq)
 		}
+		p.syncer.broadcaster.SetBlock(lastBlock.BlockNum, lastBlock.BlockTime)
 		if subs := p.syncer.broadcaster.SubscriberCount(); subs > 0 {
 			logger.Warning("ProcessBatch while live with %d subscribers: batch-indexed actions are not broadcast", subs)
 		}

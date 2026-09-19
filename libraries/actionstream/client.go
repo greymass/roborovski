@@ -91,8 +91,10 @@ type Client struct {
 	lastAcked       uint64
 	seqMu           sync.Mutex
 
-	headSeq atomic.Uint64
-	libSeq  atomic.Uint64
+	headSeq       atomic.Uint64
+	libSeq        atomic.Uint64
+	headBlock     atomic.Uint32
+	headBlockTime atomic.Uint32
 
 	recvChan        chan Action
 	closeChan       chan struct{}
@@ -304,16 +306,10 @@ func (c *Client) recvLoop() {
 			}
 
 		case MsgTypeActionHeartbeat:
-			if len(payload) >= 16 {
-				c.headSeq.Store(binary.LittleEndian.Uint64(payload[0:8]))
-				c.libSeq.Store(binary.LittleEndian.Uint64(payload[8:16]))
-			}
+			c.storePosition(payload)
 
 		case MsgTypeCatchupComplete:
-			if len(payload) >= 16 {
-				c.headSeq.Store(binary.LittleEndian.Uint64(payload[0:8]))
-				c.libSeq.Store(binary.LittleEndian.Uint64(payload[8:16]))
-			}
+			c.storePosition(payload)
 			c.catchupComplete.Store(true)
 			logger.Printf("sync", "Catchup complete, headSeq=%d, libSeq=%d", c.headSeq.Load(), c.libSeq.Load())
 
@@ -452,6 +448,27 @@ func (c *Client) GetHeadSeq() uint64 {
 
 func (c *Client) GetLIBSeq() uint64 {
 	return c.libSeq.Load()
+}
+
+// GetHeadBlock returns the last block the server has streamed through and its
+// block timestamp slot; both are zero until the server sends a heartbeat that
+// carries them.
+func (c *Client) GetHeadBlock() (blockNum, blockTime uint32) {
+	return c.headBlock.Load(), c.headBlockTime.Load()
+}
+
+// storePosition reads a heartbeat or catchup payload: head_seq u64, lib_seq
+// u64, then optionally head_block u32 and head_block_time u32.
+func (c *Client) storePosition(payload []byte) {
+	if len(payload) < 16 {
+		return
+	}
+	c.headSeq.Store(binary.LittleEndian.Uint64(payload[0:8]))
+	c.libSeq.Store(binary.LittleEndian.Uint64(payload[8:16]))
+	if len(payload) >= 24 {
+		c.headBlock.Store(binary.LittleEndian.Uint32(payload[16:20]))
+		c.headBlockTime.Store(binary.LittleEndian.Uint32(payload[20:24]))
+	}
 }
 
 func (c *Client) IsConnected() bool {

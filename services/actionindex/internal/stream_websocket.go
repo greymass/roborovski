@@ -42,15 +42,19 @@ type wsActionMessage struct {
 }
 
 type wsHeartbeatMessage struct {
-	Type    string `json:"type"`
-	HeadSeq uint64 `json:"head_seq,string"`
-	LibSeq  uint64 `json:"lib_seq,string"`
+	Type          string `json:"type"`
+	HeadSeq       uint64 `json:"head_seq,string"`
+	LibSeq        uint64 `json:"lib_seq,string"`
+	HeadBlock     uint32 `json:"head_block"`
+	HeadBlockTime uint32 `json:"head_block_time"`
 }
 
 type wsCatchupCompleteMessage struct {
-	Type    string `json:"type"`
-	HeadSeq uint64 `json:"head_seq,string"`
-	LibSeq  uint64 `json:"lib_seq,string"`
+	Type          string `json:"type"`
+	HeadSeq       uint64 `json:"head_seq,string"`
+	LibSeq        uint64 `json:"lib_seq,string"`
+	HeadBlock     uint32 `json:"head_block"`
+	HeadBlockTime uint32 `json:"head_block_time"`
 }
 
 type wsErrorMessage struct {
@@ -220,16 +224,14 @@ func (ws *StreamWebSocketServer) handleWebSocket(w http.ResponseWriter, r *http.
 			return ws.sendAction(ctx, conn, action, decode, subSeq)
 		},
 		func() error {
-			head, lib := ws.server.broadcaster.GetState()
-			return ws.sendCatchupComplete(ctx, conn, head, lib)
+			return ws.sendCatchupComplete(ctx, conn)
 		},
 		func(streamErr StreamError) error {
 			ws.sendError(ctx, conn, streamErr.Code, streamErr.Message)
 			return fmt.Errorf("stream error [%d]: %s", streamErr.Code, streamErr.Message)
 		},
 		func() error {
-			head, lib := ws.server.broadcaster.GetState()
-			return ws.sendHeartbeat(ctx, conn, head, lib)
+			return ws.sendHeartbeat(ctx, conn)
 		},
 	)
 
@@ -322,20 +324,28 @@ func (ws *StreamWebSocketServer) sendAction(ctx context.Context, conn *websocket
 	return wsjson.Write(ctx, conn, buildWsActionMessage(action, decode, ws.server.abiReader, subSeq))
 }
 
-func (ws *StreamWebSocketServer) sendCatchupComplete(ctx context.Context, conn *websocket.Conn, headSeq, libSeq uint64) error {
+func (ws *StreamWebSocketServer) sendCatchupComplete(ctx context.Context, conn *websocket.Conn) error {
+	headSeq, libSeq := ws.server.broadcaster.GetState()
+	blockNum, blockTime := ws.server.broadcaster.GetBlock()
 	msg := wsCatchupCompleteMessage{
-		Type:    "catchup_complete",
-		HeadSeq: headSeq,
-		LibSeq:  libSeq,
+		Type:          "catchup_complete",
+		HeadSeq:       headSeq,
+		LibSeq:        libSeq,
+		HeadBlock:     blockNum,
+		HeadBlockTime: blockTime,
 	}
 	return wsjson.Write(ctx, conn, msg)
 }
 
-func (ws *StreamWebSocketServer) sendHeartbeat(ctx context.Context, conn *websocket.Conn, headSeq, libSeq uint64) error {
+func (ws *StreamWebSocketServer) sendHeartbeat(ctx context.Context, conn *websocket.Conn) error {
+	headSeq, libSeq := ws.server.broadcaster.GetState()
+	blockNum, blockTime := ws.server.broadcaster.GetBlock()
 	msg := wsHeartbeatMessage{
-		Type:    "heartbeat",
-		HeadSeq: headSeq,
-		LibSeq:  libSeq,
+		Type:          "heartbeat",
+		HeadSeq:       headSeq,
+		LibSeq:        libSeq,
+		HeadBlock:     blockNum,
+		HeadBlockTime: blockTime,
 	}
 	return wsjson.Write(ctx, conn, msg)
 }

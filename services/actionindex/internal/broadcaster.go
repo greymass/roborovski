@@ -29,9 +29,11 @@ type ActionBroadcaster struct {
 	mu     sync.RWMutex
 	nextID atomic.Uint64
 
-	liveMode atomic.Bool
-	headSeq  atomic.Uint64
-	libSeq   atomic.Uint64
+	liveMode      atomic.Bool
+	headSeq       atomic.Uint64
+	libSeq        atomic.Uint64
+	headBlock     atomic.Uint32
+	headBlockTime atomic.Uint32
 
 	closeChan chan struct{}
 	closed    atomic.Bool
@@ -140,6 +142,15 @@ func (b *ActionBroadcaster) SetState(headSeq, libSeq uint64) {
 
 func (b *ActionBroadcaster) GetState() (headSeq, libSeq uint64) {
 	return b.headSeq.Load(), b.libSeq.Load()
+}
+
+func (b *ActionBroadcaster) SetBlock(blockNum, blockTime uint32) {
+	b.headBlock.Store(blockNum)
+	b.headBlockTime.Store(blockTime)
+}
+
+func (b *ActionBroadcaster) GetBlock() (blockNum, blockTime uint32) {
+	return b.headBlock.Load(), b.headBlockTime.Load()
 }
 
 func (b *ActionBroadcaster) SubscriberCount() int {
