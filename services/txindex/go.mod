@@ -3,7 +3,7 @@ module github.com/greymass/roborovski/services/txindex
 go 1.25.3
 
 require (
-	github.com/greymass/go-eosio v0.2.6
+	github.com/greymass/go-eosio v0.2.8
 	github.com/greymass/roborovski/libraries/abicache v0.0.0
 	github.com/greymass/roborovski/libraries/chain v0.0.0
 	github.com/greymass/roborovski/libraries/corereader v0.0.0

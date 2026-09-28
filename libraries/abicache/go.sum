@@ -15,3 +15,5 @@ github.com/greymass/go-eosio v0.2.5 h1:zA2ExkfrBNgADivTwH536lEfJeSEk7LMTk1ULqMdw
 github.com/greymass/go-eosio v0.2.5/go.mod h1:yM50sEC+R0UYNTwST9H7X9ybIEOCTKx4Y9ZcXL7W1z8=
 github.com/greymass/go-eosio v0.2.6 h1:89SZrX8uAgxnffz8LYyXt7R2iyxKdFzPZw8pHP0PprM=
 github.com/greymass/go-eosio v0.2.6/go.mod h1:yM50sEC+R0UYNTwST9H7X9ybIEOCTKx4Y9ZcXL7W1z8=
+github.com/greymass/go-eosio v0.2.8 h1:FTd/MEoRiRQVoFwnOsacP6V5SE/XUgx7XCfQuVAdQeE=
+github.com/greymass/go-eosio v0.2.8/go.mod h1:yM50sEC+R0UYNTwST9H7X9ybIEOCTKx4Y9ZcXL7W1z8=

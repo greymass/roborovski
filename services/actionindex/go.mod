@@ -38,7 +38,7 @@ require (
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/snappy v0.0.5-0.20231225225746-43d5d4cd4e0e // indirect
 	github.com/google/pprof v0.0.0-20251213031049-b05bdaca462f // indirect
-	github.com/greymass/go-eosio v0.2.6 // indirect
+	github.com/greymass/go-eosio v0.2.8 // indirect
 	github.com/greymass/roborovski/libraries/compression v0.0.0 // indirect
 	github.com/greymass/roborovski/libraries/corestream v0.0.0 // indirect
 	github.com/greymass/roborovski/libraries/enforce v0.0.0-00010101000000-000000000000 // indirect
