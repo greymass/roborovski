@@ -216,6 +216,7 @@ func (s *RPCServer) actionToMap(action chain.ActionTrace, blockNum uint32) map[s
 			}
 			return auths
 		}(),
+		"hex_data": action.Act.Data,
 	}
 
 	if s.abiReader != nil {
@@ -224,7 +225,6 @@ func (s *RPCServer) actionToMap(action chain.ActionTrace, blockNum uint32) map[s
 		decoded, err := s.abiReader.DecodeHex(contractNum, actionNum, action.Act.Data, blockNum)
 		if err == nil {
 			actMap["data"] = convertLargeIntsToStrings(decoded)
-			actMap["hex_data"] = action.Act.Data
 		} else {
 			actMap["data"] = action.Act.Data
 		}
@@ -447,6 +447,7 @@ func (s *RPCServer) buildTrxField(txData *corereader.TransactionData, actions []
 				}
 				return auths
 			}(),
+			"hex_data": action.Act.Data,
 		}
 
 		if s.abiReader != nil {
@@ -455,7 +456,6 @@ func (s *RPCServer) buildTrxField(txData *corereader.TransactionData, actions []
 			decoded, err := s.abiReader.DecodeHex(contractNum, actionNum, action.Act.Data, blockNum)
 			if err == nil {
 				actMap["data"] = convertLargeIntsToStrings(decoded)
-				actMap["hex_data"] = action.Act.Data
 			} else {
 				actMap["data"] = action.Act.Data
 			}
