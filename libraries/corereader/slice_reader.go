@@ -1,6 +1,7 @@
 package corereader
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -117,6 +118,16 @@ func (sm *SharedSliceMetadata) addSlice(slice SliceInfo) bool {
 	}
 
 	return true
+}
+
+// slicesAfter returns a copy of the slices numbered above sliceNum, in order.
+func (sm *SharedSliceMetadata) slicesAfter(sliceNum uint32) []SliceInfo {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	i := sort.Search(len(sm.slices), func(i int) bool {
+		return sm.slices[i].SliceNum > sliceNum
+	})
+	return append([]SliceInfo(nil), sm.slices[i:]...)
 }
 
 func (sm *SharedSliceMetadata) getSliceIndex(sliceNum uint32) (int, bool) {
@@ -377,6 +388,8 @@ type sliceReader struct {
 	refCount        atomic.Int32
 	mmapWaitTimeout time.Duration // Max time to wait for data file growth (0 = use default 30s)
 	owner           readerOwnership
+	retired         atomic.Bool // unpinned while in use; the last release closes it
+	gen             uint64      // bumped under mu when a replaced slice is reopened; offsets from an older gen are stale
 }
 
 // readerOwnership tells releaseSliceReader how a reader is held: decref, leave, or close.
@@ -385,8 +398,10 @@ type readerOwnership uint8
 const (
 	ownerOneShot readerOwnership = iota // uncached; releaseSliceReader must close it
 	ownerCached                         // held in sliceReaders LRU; refcounted
-	ownerPinned                         // held in pinnedSlices; persistent, never released per-call
+	ownerPinned                         // held in pinnedSlices until the glob range index covers it; refcounted
 )
+
+var globRangeIndexUpdateInterval = 10 * time.Second
 
 // liveSliceMmaps gauges open slice data.log mmaps; a climbing value means a reader leak.
 var liveSliceMmaps atomic.Int64
@@ -402,7 +417,7 @@ type SliceGlobRange struct {
 
 type GlobRangeIndex struct {
 	ranges              []SliceGlobRange // Sorted array of slice ranges (finalized slices only, excludes last 2)
-	highestIndexedSlice uint32           // Highest slice number in index (last 2 slices excluded)
+	highestIndexedSlice atomic.Uint32    // Highest slice number in index (last 2 slices excluded)
 	totalSlices         int              // Number of slices indexed
 	memoryUsedKB        int64            // Approximate memory usage in KB
 	loadTime            time.Duration    // Time taken to load index
@@ -568,10 +583,11 @@ func NewSliceReaderWithOptions(basePath string, opts SliceReaderOptions) (*Slice
 			logger.Printf("config", "Glob range index built:")
 			logger.Printf("config", "  Indexed slices: %d (excluding last 2 active slices)",
 				rangeIndex.totalSlices)
-			logger.Printf("config", "  Highest slice:  %d", rangeIndex.highestIndexedSlice)
+			logger.Printf("config", "  Highest slice:  %d", rangeIndex.highestIndexedSlice.Load())
 			logger.Printf("config", "  Max globalSeq:  %d", maxGlob)
 			logger.Printf("config", "  Memory usage:   %d KB", rangeIndex.memoryUsedKB)
 			logger.Printf("config", "  Build time:     %v", rangeIndex.loadTime)
+			go sr.globRangeIndexUpdateLoop(globRangeIndexUpdateInterval)
 		}
 	} else {
 		logger.Printf("config", "Glob range index disabled (sync-optimized mode)")
@@ -924,9 +940,8 @@ func buildGlobRangeIndexFromSlices(sharedMetadata *SharedSliceMetadata) *GlobRan
 	memoryUsedKB := int64(len(ranges) * 20 / 1024)
 	loadTime := time.Since(startTime)
 
-	return &GlobRangeIndex{
+	idx := &GlobRangeIndex{
 		ranges:              ranges,
-		highestIndexedSlice: highestIndexedSlice,
 		totalSlices:         len(ranges),
 		memoryUsedKB:        memoryUsedKB,
 		loadTime:            loadTime,
@@ -934,6 +949,8 @@ func buildGlobRangeIndexFromSlices(sharedMetadata *SharedSliceMetadata) *GlobRan
 		lastStatsSliceCount: len(ranges),
 		updateCooldown:      5 * time.Second,
 	}
+	idx.highestIndexedSlice.Store(highestIndexedSlice)
+	return idx
 }
 
 func loadGlobRangeIndex(basePath string, sliceInfos []SliceInfo) (*GlobRangeIndex, error) {
@@ -993,16 +1010,17 @@ func loadGlobRangeIndex(basePath string, sliceInfos []SliceInfo) (*GlobRangeInde
 		logger.Printf("warning", "Skipped %d slices due to load errors", skippedCount)
 	}
 
-	return &GlobRangeIndex{
+	idx := &GlobRangeIndex{
 		ranges:              ranges,
-		highestIndexedSlice: highestIndexedSlice,
 		totalSlices:         loadedCount,
 		memoryUsedKB:        memoryUsedKB,
 		loadTime:            loadTime,
 		lastUpdateCheck:     time.Now(),
 		lastStatsSliceCount: loadedCount,
 		updateCooldown:      5 * time.Second,
-	}, nil
+	}
+	idx.highestIndexedSlice.Store(highestIndexedSlice)
+	return idx, nil
 }
 
 func readGlobRangeFromBlockIndex(blockIndexPath string) (minGlob, maxGlob uint64, err error) {
@@ -1261,6 +1279,8 @@ func (sr *SliceReader) GetSliceHeader(sliceNum uint32) (*DataLogHeader, error) {
 		return nil, err
 	}
 	defer sr.releaseSliceReader(reader)
+	reader.mu.RLock()
+	defer reader.mu.RUnlock()
 	return reader.header, nil
 }
 
@@ -1529,7 +1549,7 @@ func (sr *SliceReader) findSliceForGlobWithRangeIndexTracked(glob uint64) (*Slic
 	if len(sr.globRangeIndex.ranges) > 0 {
 		lastIndexedRange := sr.globRangeIndex.ranges[len(sr.globRangeIndex.ranges)-1]
 		if glob > lastIndexedRange.MaxGlob {
-			sliceInfo, err := sr.findSliceForGlobFromDisk(glob, sr.globRangeIndex.highestIndexedSlice+1)
+			sliceInfo, err := sr.findSliceForGlobFromDisk(glob, sr.globRangeIndex.highestIndexedSlice.Load()+1)
 			if err != nil {
 				logger.Printf("warning", "Glob %d not found in unindexed slices, falling back to full search", glob)
 				sliceInfo, err := sr.findSliceForGlobLegacy(glob)
@@ -1827,92 +1847,79 @@ func (sr *SliceReader) UpdateGlobRangeIndexWithNewSlices() error {
 		return nil
 	}
 	sr.globRangeIndex.lastUpdateCheck = time.Now()
+	defer sr.unpinIndexedSlices()
 
-	sliceInfos, err := scanSlicesFromFilesystem(sr.basePath)
-	if err != nil {
-		return fmt.Errorf("failed to rescan slices: %w", err)
+	keep := sr.unindexedSliceCount
+	if keep <= 0 {
+		keep = 2
 	}
-
-	if len(sliceInfos) < 3 {
-		return nil // Need at least 3 slices
+	highest := sr.globRangeIndex.highestIndexedSlice.Load()
+	candidates := sr.sharedMetadata.slicesAfter(highest)
+	if len(candidates) <= keep {
+		return nil
 	}
+	candidates = candidates[:len(candidates)-keep]
 
-	sort.Slice(sliceInfos, func(i, j int) bool {
-		return sliceInfos[i].SliceNum < sliceInfos[j].SliceNum
-	})
-
-	maxIndexable := sliceInfos[len(sliceInfos)-3].SliceNum // N-2 (last 2 are active)
-
-	if maxIndexable <= sr.globRangeIndex.highestIndexedSlice {
-		return nil // No new slices to index
-	}
-
-	newRanges := make([]SliceGlobRange, 0, 10) // Typically only 1-2 new slices per update
-	newSliceCount := 0
-
-	for _, slice := range sliceInfos {
-		if slice.SliceNum <= sr.globRangeIndex.highestIndexedSlice {
-			continue
-		}
-		if slice.SliceNum > maxIndexable {
-			break
-		}
-
+	newRanges := make([]SliceGlobRange, 0, len(candidates))
+	newHighest := highest
+	for _, slice := range candidates {
 		slicePath := filepath.Join(sr.basePath,
 			fmt.Sprintf("history_%010d-%010d", slice.StartBlock, slice.MaxBlock))
-		blockIndexPath := filepath.Join(slicePath, "blocks.index")
 
-		minGlob, maxGlob, err := readGlobRangeFromBlockIndex(blockIndexPath)
+		header, err := ReadDataLogHeader(filepath.Join(slicePath, "data.log"))
+		if err != nil || !header.IsFinalized() {
+			break
+		}
+		newHighest = slice.SliceNum
+
+		minGlob, maxGlob, err := readGlobRangeFromBlockIndex(filepath.Join(slicePath, "blocks.index"))
 		if err != nil {
 			logger.Printf("warning", "Failed to read glob range for newly finalized slice %d: %v",
 				slice.SliceNum, err)
 			continue
 		}
-
 		newRanges = append(newRanges, SliceGlobRange{
 			SliceNum: slice.SliceNum,
 			MinGlob:  minGlob,
 			MaxGlob:  maxGlob,
 		})
-
-		newSliceCount++
+		if idx, ok := sr.sharedMetadata.getSliceIndex(slice.SliceNum); ok {
+			sr.sharedMetadata.markSliceFinalized(idx)
+			sr.sharedMetadata.updateSliceGlobRange(idx, minGlob, maxGlob)
+		}
 	}
 
-	if len(newRanges) == 0 {
-		return nil // Nothing to add
+	if newHighest == highest {
+		return nil
 	}
 
 	sr.globRangeIndex.mu.Lock()
 	sr.globRangeIndex.ranges = append(sr.globRangeIndex.ranges, newRanges...)
-
-	sr.globRangeIndex.highestIndexedSlice = maxIndexable
-	sr.globRangeIndex.totalSlices += newSliceCount
+	sr.globRangeIndex.highestIndexedSlice.Store(newHighest)
+	sr.globRangeIndex.totalSlices += len(newRanges)
 	sr.globRangeIndex.memoryUsedKB += int64(len(newRanges) * 20 / 1024)
-
 	sr.globRangeIndex.mu.Unlock()
 
-	oldSliceCount := sr.sharedMetadata.getSliceCount()
-
-	// Replace entire slice array in shared metadata
-	sr.sharedMetadata.mu.Lock()
-	sr.sharedMetadata.slices = sliceInfos
-	sr.sharedMetadata.mu.Unlock()
-
-	sr.sliceMapMu.Lock()
-	newMap := make(map[uint32]int)
-	for i := range sliceInfos {
-		key := sliceInfos[i].StartBlock / 10000
-		newMap[key] = i
-	}
-	sr.sliceMapByBlock = newMap
-	sr.sliceMapMu.Unlock()
-
-	logger.Printf("config", "Glob range index updated: added %d slices (+%d KB), now indexed through slice %d",
-		newSliceCount, len(newRanges)*20/1024, maxIndexable)
-	logger.Printf("config", "SliceReader now tracks %d total slices (was %d, +%d)",
-		len(sliceInfos), oldSliceCount, len(sliceInfos)-oldSliceCount)
+	logger.Printf("config", "Glob range index updated: added %d slices, now indexed through slice %d",
+		len(newRanges), newHighest)
 
 	return nil
+}
+
+func (sr *SliceReader) globRangeIndexUpdateLoop(interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			if err := sr.UpdateGlobRangeIndexWithNewSlices(); err != nil {
+				logger.Printf("warning", "Glob range index update failed: %v", err)
+			}
+		case <-sr.stopStatsTicker:
+			return
+		}
+	}
 }
 
 func (sr *SliceReader) GetGlobRangeIndexStats() *GlobRangeIndexStats {
@@ -1936,7 +1943,7 @@ func (sr *SliceReader) GetGlobRangeIndexStats() *GlobRangeIndexStats {
 
 	return &GlobRangeIndexStats{
 		IndexedSlices:           len(sr.globRangeIndex.ranges),
-		HighestIndexed:          sr.globRangeIndex.highestIndexedSlice,
+		HighestIndexed:          sr.globRangeIndex.highestIndexedSlice.Load(),
 		HighestGlob:             highestGlob,
 		MemoryKB:                sr.globRangeIndex.memoryUsedKB,
 		LastUpdate:              sr.globRangeIndex.lastUpdateCheck,
@@ -1946,7 +1953,9 @@ func (sr *SliceReader) GetGlobRangeIndexStats() *GlobRangeIndexStats {
 
 func (sr *SliceReader) SetGlobRangeUpdateCooldown(d time.Duration) {
 	if sr.globRangeIndex != nil {
+		sr.globRangeIndex.updateMu.Lock()
 		sr.globRangeIndex.updateCooldown = d
+		sr.globRangeIndex.updateMu.Unlock()
 	}
 }
 
@@ -1955,12 +1964,13 @@ func (sr *SliceReader) isPinnedSlice(sliceNum uint32) bool {
 		return false
 	}
 
-	return sliceNum > sr.globRangeIndex.highestIndexedSlice
+	return sliceNum > sr.globRangeIndex.highestIndexedSlice.Load()
 }
 
 func (sr *SliceReader) getPinnedSliceReader(sliceNum uint32) (*sliceReader, error) {
 	sr.pinnedSlicesMu.RLock()
 	if reader, found := sr.pinnedSlices[sliceNum]; found {
+		reader.refCount.Add(1)
 		sr.pinnedSlicesMu.RUnlock()
 		return reader, nil
 	}
@@ -1970,6 +1980,7 @@ func (sr *SliceReader) getPinnedSliceReader(sliceNum uint32) (*sliceReader, erro
 	defer sr.pinnedSlicesMu.Unlock()
 
 	if reader, found := sr.pinnedSlices[sliceNum]; found {
+		reader.refCount.Add(1)
 		return reader, nil
 	}
 
@@ -1979,8 +1990,28 @@ func (sr *SliceReader) getPinnedSliceReader(sliceNum uint32) (*sliceReader, erro
 	}
 
 	reader.owner = ownerPinned
+	reader.refCount.Add(1)
 	sr.pinnedSlices[sliceNum] = reader
 	return reader, nil
+}
+
+// unpinIndexedSlices drops pinned readers the glob range index now covers so later reads reopen them through the LRU.
+func (sr *SliceReader) unpinIndexedSlices() {
+	if sr.globRangeIndex == nil {
+		return
+	}
+	sr.pinnedSlicesMu.Lock()
+	defer sr.pinnedSlicesMu.Unlock()
+	for sliceNum, reader := range sr.pinnedSlices {
+		if sr.isPinnedSlice(sliceNum) {
+			continue
+		}
+		delete(sr.pinnedSlices, sliceNum)
+		reader.retired.Store(true)
+		if reader.refCount.Load() == 0 {
+			reader.close()
+		}
+	}
 }
 
 func (sr *SliceReader) loadSliceReaderFromDisk(sliceNum uint32) (*sliceReader, error) {
@@ -2149,7 +2180,9 @@ func (sr *SliceReader) releaseSliceReader(reader *sliceReader) {
 	case ownerCached:
 		reader.refCount.Add(-1)
 	case ownerPinned:
-		// persistent; nothing to release per-call
+		if reader.refCount.Add(-1) == 0 && reader.retired.Load() {
+			reader.close()
+		}
 	default: // ownerOneShot: uncached reader for an unfinalized slice
 		reader.close()
 	}
@@ -2175,44 +2208,179 @@ func newSliceReader(basePath string, sliceNum uint32) (*sliceReader, error) {
 		}
 	}
 
-	dataLogPath := filepath.Join(basePath, "data.log")
-	blockFile, err := os.Open(dataLogPath)
+	blockFile, mmapData, header, err := openDataLog(filepath.Join(basePath, "data.log"))
 	if err != nil {
-		return nil, fmt.Errorf("failed to open data log: %w", err)
+		return nil, err
 	}
 	reader.blockFile = blockFile
+	reader.mmapData = mmapData
+	reader.header = header
+
+	reader.loaded = true
+	return reader, nil
+}
+
+func openDataLog(path string) (*os.File, []byte, *DataLogHeader, error) {
+	blockFile, err := os.Open(path)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to open data log: %w", err)
+	}
 
 	fileInfo, err := blockFile.Stat()
 	if err != nil {
 		blockFile.Close()
-		return nil, fmt.Errorf("failed to stat data log: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to stat data log: %w", err)
 	}
 
-	if fileInfo.Size() > 0 {
-		mmapData, err := syscall.Mmap(
-			int(blockFile.Fd()),
-			0,
-			int(fileInfo.Size()),
-			syscall.PROT_READ,
-			syscall.MAP_SHARED,
-		)
+	if fileInfo.Size() == 0 {
+		return blockFile, nil, nil, nil
+	}
+
+	mmapData, err := syscall.Mmap(
+		int(blockFile.Fd()),
+		0,
+		int(fileInfo.Size()),
+		syscall.PROT_READ,
+		syscall.MAP_SHARED,
+	)
+	if err != nil {
+		blockFile.Close()
+		return nil, nil, nil, fmt.Errorf("failed to mmap data log: %w", err)
+	}
+	liveSliceMmaps.Add(1)
+
+	var header *DataLogHeader
+	if len(mmapData) >= DataLogHeaderSize {
+		h, err := ParseDataLogHeader(mmapData[:DataLogHeaderSize])
+		if err == nil && h.Validate() == nil {
+			header = h
+		}
+	}
+	return blockFile, mmapData, header, nil
+}
+
+// reopenIfReplaced swaps in the slice now on disk when data.log was replaced under the open handle.
+func (r *sliceReader) reopenIfReplaced() (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.reopenIfReplacedLocked()
+}
+
+func (r *sliceReader) dataLogReplacedLocked() bool {
+	if r.blockFile == nil {
+		return false
+	}
+	pathInfo, err := os.Stat(filepath.Join(r.basePath, "data.log"))
+	if err != nil {
+		return false
+	}
+	openInfo, err := r.blockFile.Stat()
+	if err != nil {
+		return false
+	}
+	return !os.SameFile(pathInfo, openInfo)
+}
+
+// loadBlockIndexLocked rereads blocks.index only if data.log is still the open file afterwards, so the index matches the mmap.
+func (r *sliceReader) loadBlockIndexLocked() (map[uint32]blockIndexEntry, error) {
+	if !r.dataLogReplacedLocked() {
+		idx, err := loadBlockIndexSimple(filepath.Join(r.basePath, "blocks.index"))
 		if err != nil {
-			blockFile.Close()
-			return nil, fmt.Errorf("failed to mmap data log: %w", err)
+			return nil, err
 		}
-		reader.mmapData = mmapData
-		liveSliceMmaps.Add(1)
-
-		if len(mmapData) >= DataLogHeaderSize {
-			header, err := ParseDataLogHeader(mmapData[:DataLogHeaderSize])
-			if err == nil && header.Validate() == nil {
-				reader.header = header
-			}
+		if !r.dataLogReplacedLocked() {
+			return idx, nil
 		}
 	}
+	reopened, err := r.reopenIfReplacedLocked()
+	if err != nil {
+		return nil, err
+	}
+	if reopened {
+		return r.blockIndex, nil
+	}
+	return nil, fmt.Errorf("slice %d data.log was replaced and its blocks.index is not ready", r.sliceNum)
+}
 
-	reader.loaded = true
-	return reader, nil
+func (r *sliceReader) reopenIfReplacedLocked() (bool, error) {
+	if !r.dataLogReplacedLocked() {
+		return false, nil
+	}
+	dataLogPath := filepath.Join(r.basePath, "data.log")
+
+	blockFile, mmapData, header, err := openDataLog(dataLogPath)
+	if err != nil {
+		return false, fmt.Errorf("failed to reopen replaced slice %d: %w", r.sliceNum, err)
+	}
+	blockIdx, err := loadBlockIndexSimple(filepath.Join(r.basePath, "blocks.index"))
+	if err == nil && !blockIndexMatchesData(blockIdx, mmapData) {
+		err = fmt.Errorf("blocks.index does not match the new data.log")
+	}
+	if err != nil {
+		// Keep the old handle until the replacement's index is written; the next check retries.
+		if mmapData != nil {
+			syscall.Munmap(mmapData)
+			liveSliceMmaps.Add(-1)
+		}
+		blockFile.Close()
+		logger.Printf("debug", "Slice %d data.log was replaced but is not readable yet: %v", r.sliceNum, err)
+		return false, nil
+	}
+
+	logger.Printf("warning", "Slice %d data.log was replaced on disk, reopening %s", r.sliceNum, r.basePath)
+
+	if r.mmapData != nil {
+		syscall.Munmap(r.mmapData)
+		liveSliceMmaps.Add(-1)
+	}
+	r.blockFile.Close()
+
+	r.blockFile = blockFile
+	r.mmapData = mmapData
+	r.header = header
+	r.blockIndex = blockIdx
+	r.minBlock = 0
+	for blockNum := range blockIdx {
+		if r.minBlock == 0 || blockNum < r.minBlock {
+			r.minBlock = blockNum
+		}
+	}
+	r.gen++
+	return true, nil
+}
+
+// blockIndexMatchesData checks the index's first and last records against data.log's size prefix and CRC.
+func blockIndexMatchesData(idx map[uint32]blockIndexEntry, data []byte) bool {
+	if len(idx) == 0 {
+		return true
+	}
+	var first, last blockIndexEntry
+	seen := false
+	for _, e := range idx {
+		if !seen || e.Offset < first.Offset {
+			first = e
+		}
+		if !seen || e.Offset > last.Offset {
+			last = e
+		}
+		seen = true
+	}
+	for _, e := range []blockIndexEntry{first, last} {
+		end := e.Offset + 4 + uint64(e.Size)
+		if end+4 > uint64(len(data)) || binary.LittleEndian.Uint32(data[e.Offset:]) != e.Size {
+			return false
+		}
+		if crc32.ChecksumIEEE(data[e.Offset+4:end]) != binary.LittleEndian.Uint32(data[end:]) {
+			return false
+		}
+	}
+	return true
+}
+
+func (r *sliceReader) generation() uint64 {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.gen
 }
 
 func (r *sliceReader) close() error {
@@ -2316,9 +2484,8 @@ func (r *sliceReader) readBlockData(blockNum uint32) ([]byte, error) {
 		r.mu.Lock()
 		entry, found = r.blockIndex[blockNum]
 		if !found {
-			blockIdxPath := filepath.Join(r.basePath, "blocks.index")
-			logger.Printf("debug", "Reloading index from %s", blockIdxPath)
-			freshIdx, err := loadBlockIndexSimple(blockIdxPath)
+			logger.Printf("debug", "Reloading index from %s", filepath.Join(r.basePath, "blocks.index"))
+			freshIdx, err := r.loadBlockIndexLocked()
 			if err != nil {
 				r.mu.Unlock()
 				return nil, fmt.Errorf("failed to reload block index: %w", err)
@@ -2356,12 +2523,14 @@ func (r *sliceReader) readBlockData(blockNum uint32) ([]byte, error) {
 
 		r.mu.RLock()
 	}
+	gen := r.gen
+	header := r.header
 	r.mu.RUnlock()
 
 	dataOffset := int64(entry.Offset) + 4
 	dataEndOffset := dataOffset + int64(entry.Size)
 
-	isFinalized := r.header != nil && r.header.IsFinalized()
+	isFinalized := header != nil && header.IsFinalized()
 
 	var data []byte
 
@@ -2372,9 +2541,16 @@ func (r *sliceReader) readBlockData(blockNum uint32) ([]byte, error) {
 
 		if needsRemap {
 			r.mu.Lock()
+			if r.gen != gen {
+				r.mu.Unlock()
+				return r.readBlockData(blockNum)
+			}
 			if r.mmapData == nil || dataEndOffset > int64(len(r.mmapData)) {
 				if err := r.remapDataLog(); err != nil {
 					r.mu.Unlock()
+					if reopened, _ := r.reopenIfReplaced(); reopened {
+						return r.readBlockData(blockNum)
+					}
 					return nil, fmt.Errorf("block %d extends beyond mmap bounds and remap failed: %w", blockNum, err)
 				}
 				if dataEndOffset > int64(len(r.mmapData)) {
@@ -2386,9 +2562,15 @@ func (r *sliceReader) readBlockData(blockNum uint32) ([]byte, error) {
 		}
 
 		r.mu.RLock()
-		rawData := r.mmapData[dataOffset:dataEndOffset]
-		data = make([]byte, len(rawData))
-		copy(data, rawData)
+		if r.gen != gen {
+			r.mu.RUnlock()
+			return r.readBlockData(blockNum)
+		}
+		if r.mmapData == nil || dataEndOffset > int64(len(r.mmapData)) {
+			r.mu.RUnlock()
+			return nil, fmt.Errorf("block %d extends beyond mmap bounds in slice %d", blockNum, r.sliceNum)
+		}
+		data = bytes.Clone(r.mmapData[dataOffset:dataEndOffset])
 		r.mu.RUnlock()
 	} else {
 		mmapTimeout := r.mmapWaitTimeout
@@ -2412,6 +2594,10 @@ func (r *sliceReader) readBlockData(blockNum uint32) ([]byte, error) {
 
 			if needsRemap {
 				r.mu.Lock()
+				if r.gen != gen {
+					r.mu.Unlock()
+					return r.readBlockData(blockNum)
+				}
 				if r.mmapData == nil || endOffset > int64(len(r.mmapData)) {
 					r.remapDataLog()
 				}
@@ -2419,6 +2605,12 @@ func (r *sliceReader) readBlockData(blockNum uint32) ([]byte, error) {
 				r.mu.Unlock()
 
 				if needsRemap {
+					if _, err := r.reopenIfReplaced(); err != nil {
+						return nil, err
+					}
+					if r.generation() != gen {
+						return r.readBlockData(blockNum)
+					}
 					elapsed := time.Since(start)
 					if elapsed > mmapTimeout {
 						return nil, fmt.Errorf("block %d extends beyond mmap bounds after %v (need offset %d, mmap size %d)",
@@ -2436,15 +2628,30 @@ func (r *sliceReader) readBlockData(blockNum uint32) ([]byte, error) {
 			}
 
 			r.mu.RLock()
-			rawData := r.mmapData[dataOffset:crcOffset]
+			if r.gen != gen {
+				r.mu.RUnlock()
+				return r.readBlockData(blockNum)
+			}
+			if r.mmapData == nil || endOffset > int64(len(r.mmapData)) {
+				r.mu.RUnlock()
+				continue
+			}
 			storedCRC := binary.LittleEndian.Uint32(r.mmapData[crcOffset:endOffset])
+			calculatedCRC := crc32.ChecksumIEEE(r.mmapData[dataOffset:crcOffset])
+			matched := calculatedCRC == storedCRC
+			if matched {
+				data = bytes.Clone(r.mmapData[dataOffset:crcOffset])
+			}
 			r.mu.RUnlock()
-
-			calculatedCRC := crc32.ChecksumIEEE(rawData)
-			if calculatedCRC == storedCRC {
-				data = make([]byte, len(rawData))
-				copy(data, rawData)
+			if matched {
 				break
+			}
+
+			if _, err := r.reopenIfReplaced(); err != nil {
+				return nil, err
+			}
+			if r.generation() != gen {
+				return r.readBlockData(blockNum)
 			}
 
 			elapsed := time.Since(start)
@@ -2520,8 +2727,7 @@ func (r *sliceReader) binarySearchGlob(glob uint64) (uint32, error) {
 
 	r.mu.Lock()
 	if len(r.blockIndex) == oldBlockCount {
-		blockIdxPath := filepath.Join(r.basePath, "blocks.index")
-		freshIdx, err := loadBlockIndexSimple(blockIdxPath)
+		freshIdx, err := r.loadBlockIndexLocked()
 		if err != nil {
 			r.mu.Unlock()
 			return 0, fmt.Errorf("glob %d not found in slice %d (reload failed: %v)", glob, r.sliceNum, err)
