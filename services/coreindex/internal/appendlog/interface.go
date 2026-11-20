@@ -33,9 +33,6 @@ type StoreInterface interface {
 	// Index operations
 	BuildGlobIndex() (int, error) // Build glob index from block metadata (used during recovery)
 
-	// Validation operations (for reactive validation during sync)
-	ValidateAndRepairLastSlices(numSlices int) error // Validate and repair last N slices
-
 	// Persistence
 	Flush() error
 	Sync() error

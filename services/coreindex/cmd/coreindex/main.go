@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
@@ -26,6 +25,7 @@ import (
 	"github.com/greymass/roborovski/libraries/abicache"
 	"github.com/greymass/roborovski/libraries/chain"
 	"github.com/greymass/roborovski/libraries/config"
+	"github.com/greymass/roborovski/libraries/coremanifest"
 	"github.com/greymass/roborovski/libraries/corereader"
 	"github.com/greymass/roborovski/libraries/corestream"
 	"github.com/greymass/roborovski/libraries/encoding"
@@ -34,6 +34,7 @@ import (
 	"github.com/greymass/roborovski/libraries/server"
 	"github.com/greymass/roborovski/libraries/tracereader"
 	"github.com/greymass/roborovski/services/coreindex/internal/appendlog"
+	"github.com/greymass/roborovski/services/coreindex/internal/publish"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -586,7 +587,7 @@ func isSliceError(err error) bool {
 }
 
 // Sync blocks from trace files into append-only store
-func syncFromTraceFiles(config *server.Config, traceConfig *tracereader.Config, workercount uint32, prefetchercount uint32, store appendlog.StoreInterface, abiWriter *abicache.Writer, start uint32, end uint32, exit *bool, exitChan <-chan struct{}, broadcast BroadcastFunc, logInterval time.Duration) error {
+func syncFromTraceFiles(config *server.Config, traceConfig *tracereader.Config, workercount uint32, prefetchercount uint32, store appendlog.StoreInterface, abiWriter *abicache.Writer, commit func() error, start uint32, end uint32, exit *bool, exitChan <-chan struct{}, broadcast BroadcastFunc, logInterval time.Duration) error {
 	stride := uint32(traceConfig.Stride)
 
 	// Calculate stride range
@@ -624,17 +625,6 @@ func syncFromTraceFiles(config *server.Config, traceConfig *tracereader.Config, 
 
 			atomic.AddInt64(&totalStorageNs, tElapsed.Nanoseconds())
 
-			if err == nil && broadcast != nil {
-				if ss, ok := store.(*appendlog.SliceStore); ok {
-					if syncErr := ss.SaveActiveSliceIndices(); syncErr != nil {
-						log.Printf("Warning: failed to save block indices before broadcast: %v", syncErr)
-					}
-				}
-				for _, entry := range batch.entries {
-					broadcast(entry.BlockNum, entry.Data)
-				}
-			}
-
 			batch.done <- err
 			close(batch.done)
 		}
@@ -667,6 +657,7 @@ func syncFromTraceFiles(config *server.Config, traceConfig *tracereader.Config, 
 
 	const syncEvery = 50000
 	const batchSize = 200
+	const commitEvery = 1000
 
 	var lastLogActions int64
 	var lastLogTxns int64
@@ -677,6 +668,9 @@ func syncFromTraceFiles(config *server.Config, traceConfig *tracereader.Config, 
 	batch := make([]appendlog.BlockEntry, 0, batchSize)
 	var sliceErr error
 	var readErr error
+	var commitErr error
+	var unpublished []appendlog.BlockEntry
+	var sinceCommit uint32
 
 	flushBatch := func() error {
 		if len(batch) == 0 {
@@ -701,6 +695,11 @@ func syncFromTraceFiles(config *server.Config, traceConfig *tracereader.Config, 
 			return err
 		}
 
+		if broadcast != nil {
+			unpublished = append(unpublished, wb.entries...)
+		}
+		sinceCommit += uint32(batchLen)
+
 		totalFlushTime := time.Since(flushStart)
 
 		flushStatsMu.Lock()
@@ -714,6 +713,22 @@ func syncFromTraceFiles(config *server.Config, traceConfig *tracereader.Config, 
 		flushStatsMu.Unlock()
 
 		batch = batch[:0]
+		return nil
+	}
+
+	// Readers and stream clients see a block only after the manifest that commits it is durable.
+	commitNow := func() error {
+		if err := flushBatch(); err != nil {
+			return err
+		}
+		if err := commit(); err != nil {
+			return err
+		}
+		for _, entry := range unpublished {
+			broadcast(entry.BlockNum, entry.Data)
+		}
+		unpublished = unpublished[:0]
+		sinceCommit = 0
 		return nil
 	}
 
@@ -788,9 +803,15 @@ func syncFromTraceFiles(config *server.Config, traceConfig *tracereader.Config, 
 		}
 
 		for _, abi := range ps.abis {
-			if err := abiWriter.Write(abi.blockNum, abi.contract, abi.abiJSON); err != nil {
-				logger.Printf("warning", "Failed to write ABI for %d at block %d: %v", abi.contract, abi.blockNum, err)
+			if abi.blockNum >= nextBlock {
+				continue
 			}
+			if err := abiWriter.Write(abi.blockNum, abi.contract, abi.abiJSON); err != nil {
+				return fmt.Errorf("write ABI for %d at block %d: %w", abi.contract, abi.blockNum, err)
+			}
+		}
+		if sinceCommit+uint32(len(batch)) >= commitEvery {
+			return commitNow()
 		}
 		return nil
 	}
@@ -948,21 +969,12 @@ mainLoop:
 		nextStrideNum++
 	}
 
-	// Final flush
-	if len(batch) > 0 {
-		if *exit {
-			logger.Printf("debug-shutdown", "Flushing final batch (%d blocks)...", len(batch))
-		}
-		if err := flushBatch(); err != nil {
-			logger.Error("Failed to flush final batch: %v", err)
-		}
-	}
-
 	if *exit {
-		logger.Println("debug-shutdown", "Performing final sync to disk...")
+		logger.Printf("debug-shutdown", "Committing final batch (%d blocks)...", len(batch))
 	}
-	if err := store.Sync(); err != nil {
-		logger.Error("Failed to sync: %v", err)
+	if err := commitNow(); err != nil {
+		logger.Error("Failed to commit: %v", err)
+		commitErr = err
 	}
 	if *exit {
 		logger.Println("debug-shutdown", "Final sync complete")
@@ -983,6 +995,9 @@ mainLoop:
 		logger.Println("debug-shutdown", "Async writer finished")
 	}
 
+	if commitErr != nil {
+		return commitErr
+	}
 	if readErr != nil {
 		return readErr
 	}
@@ -1969,19 +1984,7 @@ func main() {
 		logger.Println("startup", "")
 		logger.Println("startup", "Replay mode:")
 		logger.Println("startup", "  WARNING: Will erase all data and restart from block 2")
-
-		// Check if database path exists
-		if _, err := os.Stat(cfg.Path); err == nil {
-			logger.Printf("startup", "  Removing all data from %s...", cfg.Path)
-			if err := os.RemoveAll(cfg.Path); err != nil {
-				logger.Fatal("Failed to remove data directory: %v", err)
-			}
-			logger.Println("startup", "  All data erased successfully")
-		} else {
-			logger.Println("startup", "  Database path does not exist - nothing to erase")
-		}
-
-		logger.Println("startup", "  Continuing with fresh sync from block 2...")
+		logger.Printf("startup", "  Core storage and the ABI cache are erased after this process takes both writer locks")
 	}
 
 	if _, err := os.Stat(traceConfig.Dir); os.IsNotExist(err) {
@@ -1998,9 +2001,41 @@ func main() {
 		ZstdLevel:        cfg.ZstdLevel,
 		LogSliceInterval: uint32(cfg.LogSliceInterval),
 	}
+	abiPath := cfg.ABIPath
+	if abiPath == "" {
+		abiPath = filepath.Join(cfg.Path, "abis")
+	}
+	var chainID [32]byte
+	if cfg.ChainID != "" {
+		var err error
+		if chainID, err = coremanifest.ParseChainID(cfg.ChainID); err != nil {
+			logger.Fatal("Invalid --chain-id: %v", err)
+		}
+	}
+	publisher, err := publish.Open(publish.Config{
+		CoreRoot:  cfg.Path,
+		ABIRoot:   abiPath,
+		SliceSpan: uint32(cfg.SliceSize),
+		ChainID:   chainID,
+		HeadID:    blockIDFromBlob,
+		Erase:     cfg.Replay,
+	})
+	if err != nil {
+		logger.Fatal("Cannot take ownership of storage: %v", err)
+	}
+	defer publisher.Close()
+	if err := publisher.Prepare(); err != nil {
+		logger.Fatal("Storage is not at a committed boundary: %v", err)
+	}
+	committed := publisher.Manifest()
+	logger.Printf("startup", "Committed head: block %d (store %s, epoch %d)", committed.Head, coremanifest.FormatUUID(committed.CoreUUID), committed.Epoch)
+
 	store, err := appendlog.NewSliceStore(cfg.Path, opts)
 	if err != nil {
 		logger.Fatal("Failed to open store: %v", err)
+	}
+	if err := store.SetCommittedHead(committed.Head); err != nil {
+		logger.Fatal("Failed to record committed head: %v", err)
 	}
 	defer func() {
 		logger.Println("debug-shutdown", "Closing store...")
@@ -2016,11 +2051,6 @@ func main() {
 		logger.Printf("startup", "Slice cache saved (%d slices)", len(store.GetSliceInfos()))
 	}
 
-	// Open ABI cache writer
-	abiPath := cfg.ABIPath
-	if abiPath == "" {
-		abiPath = filepath.Join(cfg.Path, "abis")
-	}
 	abiWriter, err := abicache.NewWriter(abiPath)
 	if err != nil {
 		logger.Fatal("Failed to open ABI cache: %v", err)
@@ -2037,6 +2067,11 @@ func main() {
 		logger.Fatal("Failed to open ABI cache reader: %v", err)
 	}
 	defer abiReader.Close()
+
+	commit := func() error {
+		_, err := publisher.Commit(store, abiWriter)
+		return err
+	}
 
 	// Handle --repair-slice N BEFORE validation: repair specific slice and exit
 	if cfg.RepairSlice >= 0 {
@@ -2099,11 +2134,6 @@ func main() {
 		logger.Println("startup", "")
 		logger.Println("startup", "Rebuild ABI cache:")
 
-		abiPath := cfg.ABIPath
-		if abiPath == "" {
-			abiPath = filepath.Join(cfg.Path, "abis")
-		}
-
 		if cfg.ActionIndexSource != "" {
 			logger.Printf("startup", "  Mode: stream from actionindex (%s)", cfg.ActionIndexSource)
 		} else {
@@ -2111,10 +2141,28 @@ func main() {
 		}
 		logger.Printf("startup", "  Output: %s", abiPath)
 
-		result, err := RebuildABIs(store, abiPath, cfg.ActionIndexSource)
+		result, err := RebuildABIs(store, abiPath, cfg.ActionIndexSource, func(tmp string) error {
+			dataEnd, indexLen, err := abicache.CommittedBounds(tmp, committed.Head)
+			if err != nil {
+				return err
+			}
+			if _, err := abicache.TruncateTo(tmp, dataEnd, indexLen); err != nil {
+				return err
+			}
+			binding := publisher.ABIBinding()
+			return coremanifest.WriteBinding(tmp, &binding)
+		})
 		if err != nil {
 			logger.Fatal("ABI rebuild failed: %v", err)
 		}
+		rebuilt, err := abicache.NewWriter(abiPath)
+		if err != nil {
+			logger.Fatal("Failed to open rebuilt ABI cache: %v", err)
+		}
+		if _, err := publisher.Commit(store, rebuilt); err != nil {
+			logger.Fatal("Failed to commit rebuilt ABI cache: %v", err)
+		}
+		rebuilt.Close()
 
 		logger.Println("startup", "")
 		logger.Printf("startup", "  ✓ ABI rebuild complete in %v", result.Duration)
@@ -2201,37 +2249,9 @@ func main() {
 			validCount, invalidCount, elapsed.Seconds())
 
 		if invalidCount > 0 {
-			if cfg.Repair {
-				logger.Printf("startup", "  Repair mode: removing %d invalid slices...", invalidCount)
-				for _, sliceNum := range invalidSlices {
-					if err := store.RemoveSlice(sliceNum); err != nil {
-						logger.Error("Failed to remove slice %d: %v", sliceNum, err)
-					}
-				}
-				if len(invalidSlices) > 0 {
-					lastValidSlice := uint32(0)
-					for _, info := range sliceInfos {
-						isInvalid := false
-						for _, inv := range invalidSlices {
-							if info.SliceNum == inv {
-								isInvalid = true
-								break
-							}
-						}
-						if !isInvalid && info.SliceNum > lastValidSlice {
-							lastValidSlice = info.SliceNum
-						}
-					}
-					if err := store.AdjustLIBToSlice(lastValidSlice); err != nil {
-						logger.Fatal("Failed to adjust LIB: %v", err)
-					}
-				}
-				logger.Printf("startup", "  ✓ Repair complete, LIB=%d", store.GetLIB())
-				os.Exit(0)
-			} else {
-				logger.Println("startup", "  Run with --repair flag to remove invalid slices")
-				os.Exit(1)
-			}
+			logger.Printf("startup", "  Invalid slices: %v", invalidSlices)
+			logger.Println("startup", "  Published slices are never removed here; repair core storage by removing a suffix of whole slices and replaying")
+			os.Exit(1)
 		}
 
 		logger.Println("startup", "  ✓ All slices valid")
@@ -2304,6 +2324,9 @@ func main() {
 			}
 		}
 
+		if err := commit(); err != nil {
+			logger.Fatal("Failed to commit downloaded slices: %v", err)
+		}
 		logger.Printf("startup", "  Download complete, LIB is now %d", store.GetLIB())
 	}
 
@@ -2550,7 +2573,7 @@ func main() {
 			if streamServer != nil {
 				broadcastFn = streamServer.Broadcast
 			}
-			syncErr := syncFromTraceFiles(serverConfig, traceConfig, uint32(cfg.Workers), uint32(cfg.Prefetchers), store, abiWriter, myLIB+1, syncTarget, &exit, ctx.Done(), broadcastFn, cfg.GetLogInterval())
+			syncErr := syncFromTraceFiles(serverConfig, traceConfig, uint32(cfg.Workers), uint32(cfg.Prefetchers), store, abiWriter, commit, myLIB+1, syncTarget, &exit, ctx.Done(), broadcastFn, cfg.GetLogInterval())
 
 			switch e := syncErr.(type) {
 			case nil:
@@ -2567,15 +2590,7 @@ func main() {
 				if errors.Is(syncErr, appendlog.ErrNonContiguousWrite) {
 					logger.Fatal("Gap-safety violation (non-contiguous write): %v", syncErr)
 				}
-				if !exit {
-					logger.Warning("Sync error detected: %v", syncErr)
-					logger.Println("validation", "Running reactive validation to check/repair slices...")
-					if repairErr := store.ValidateAndRepairLastSlices(2); repairErr != nil {
-						logger.Error("Reactive validation failed: %v", repairErr)
-						logger.Fatal("Cannot continue after slice validation failure")
-					}
-					logger.Println("validation", "Reactive validation complete, will restart sync from repaired position")
-				}
+				logger.Fatal("Write failed: %v (restart recovers to committed block %d)", syncErr, publisher.Manifest().Head)
 			}
 
 			if exit {

@@ -44,10 +44,14 @@ type SliceStore struct {
 	batchStatsInterval time.Duration
 
 	// Metadata
-	lib   uint32
-	head  uint32
-	debug bool
-	mu    sync.RWMutex
+	lib        uint32
+	head       uint32
+	firstBlock uint32 // first block appended to an empty store by this instance
+	headData   []byte // stored bytes of the head block, kept for its block ID at commit
+	gated      bool   // readers see only published blocks
+	published  uint32
+	debug      bool
+	mu         sync.RWMutex
 }
 
 // batchStatsAccum accumulates AppendBlockBatch timing for periodic logging
@@ -238,8 +242,12 @@ func (s *SliceStore) AppendBlock(blockNum uint32, data []byte, globMin, globMax 
 	s.cacheBlock(blockNum, dataToWrite)
 
 	// Update metadata
+	if s.head == 0 {
+		s.firstBlock = blockNum
+	}
 	s.lib = blockNum
 	s.head = blockNum
+	s.headData = dataToWrite
 
 	return nil
 }
@@ -482,12 +490,7 @@ func (s *SliceStore) StartupValidation(forceFullValidation bool, workers int) er
 		logger.Println("validation", "Full validation requested (--verify flag)")
 	}
 
-	// Phase 1: Crash recovery - validate active slice and adjust LIB
-	if err := s.recoverFromCrash(); err != nil {
-		return fmt.Errorf("crash recovery failed: %w", err)
-	}
-
-	// Phase 2: Rebuild glob indices if needed
+	// Rebuild glob indices if needed. Recovery to the committed boundary happens before the store opens.
 	if forceFullValidation || !cleanShutdown {
 		logger.Printf("validation", "Building glob index with %d workers...", workers)
 		globCount, err := s.BuildGlobIndexParallel(workers)
@@ -647,10 +650,16 @@ func (s *SliceStore) AppendBlockBatch(blocks []BlockEntry) error {
 		}
 
 		// Skip caching during batch writes (not needed for write-only path)
+		if i == len(blocks)-1 {
+			s.headData = dataToWrite
+		}
 	}
 
 	// Update metadata to last block in batch (no sync - caller handles that)
 	lastBlock := &blocks[len(blocks)-1]
+	if s.head == 0 {
+		s.firstBlock = blocks[0].BlockNum
+	}
 	s.lib = lastBlock.BlockNum
 	s.head = lastBlock.BlockNum
 
@@ -788,13 +797,20 @@ func (s *SliceStore) GetBlockByGlob(glob uint64) (uint32, error) {
 		return 0, ErrNotFound
 	}
 
-	return slice.GetBlockByGlob(glob)
+	blockNum, err := slice.GetBlockByGlob(glob)
+	if err == nil && s.gated && blockNum > s.published {
+		return 0, ErrNotFound
+	}
+	return blockNum, err
 }
 
 // GetLIB returns last irreversible block number
 func (s *SliceStore) GetLIB() uint32 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if s.gated {
+		return s.published
+	}
 	return s.lib
 }
 
@@ -802,6 +818,9 @@ func (s *SliceStore) GetLIB() uint32 {
 func (s *SliceStore) GetHead() uint32 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if s.gated {
+		return s.published
+	}
 	return s.head
 }
 
@@ -1007,316 +1026,20 @@ func (s *SliceStore) AddDownloadedSlice(info *SliceInfo) error {
 	if err := s.sliceManager.AddSliceInfo(*info); err != nil {
 		return err
 	}
+	s.sliceManager.mu.Lock()
+	s.sliceManager.unsynced[s.sliceManager.slicePath(info.SliceNum)] = true
+	s.sliceManager.rootChanged = true
+	s.sliceManager.mu.Unlock()
 
+	if s.lib == 0 {
+		s.firstBlock = info.StartBlock
+	}
 	if info.EndBlock > s.lib {
 		s.lib = info.EndBlock
 		s.head = info.EndBlock
 	}
 
 	return s.saveState()
-}
-
-// SetLIB sets the LIB manually (for admin operations like slice recreation)
-func (s *SliceStore) SetLIB(lib uint32) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.lib = lib
-	s.head = lib
-
-	// Clear active slice so a new one will be created when writing resumes
-	s.sliceManager.activeSlice = nil
-
-	return s.saveState()
-}
-
-// RemoveSlice removes an invalid slice and logs the operation
-// This is a wrapper around DeleteSlice with validation-specific logging
-func (s *SliceStore) RemoveSlice(sliceNum uint32) error {
-	logger.Warning("Removing invalid slice %d...", sliceNum)
-	if err := s.DeleteSlice(sliceNum); err != nil {
-		return fmt.Errorf("failed to remove slice %d: %w", sliceNum, err)
-	}
-	// Save slices.json after removal
-	s.mu.Lock()
-	err := s.sliceManager.saveSliceInfos()
-	s.mu.Unlock()
-	if err != nil {
-		return fmt.Errorf("failed to save slice infos after removal: %w", err)
-	}
-	return nil
-}
-
-// AdjustLIBToSlice sets LIB to end of given slice, for use after removing invalid slices
-// If sliceNum is provided, LIB is set to end of that slice
-// If sliceNum == 0 or no valid slices exist, LIB is set to 0
-func (s *SliceStore) AdjustLIBToSlice(sliceNum uint32) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if sliceNum == 0 {
-		s.lib = 0
-		s.head = 0
-		s.sliceManager.activeSlice = nil
-		logger.Printf("store", "LIB reset to 0 (no valid slices)")
-		return s.saveState()
-	}
-
-	// Find the slice info to get its end block
-	var targetSlice *SliceInfo
-	for _, info := range s.sliceManager.sliceInfos {
-		if info.SliceNum == sliceNum {
-			targetSlice = &info
-			break
-		}
-	}
-
-	if targetSlice == nil {
-		return fmt.Errorf("slice %d not found in slice infos", sliceNum)
-	}
-
-	// Set LIB to end of the target slice
-	// For finalized slices, EndBlock is the last block
-	// For active slices, EndBlock may be 0 or the last written block
-	newLIB := targetSlice.EndBlock
-	if newLIB == 0 {
-		// Active slice with no blocks yet - use previous slice's end or 0
-		if sliceNum > 0 {
-			// Find previous slice
-			for _, info := range s.sliceManager.sliceInfos {
-				if info.SliceNum == sliceNum-1 {
-					newLIB = info.EndBlock
-					break
-				}
-			}
-		}
-	}
-
-	s.lib = newLIB
-	s.head = newLIB
-	s.sliceManager.activeSlice = nil
-
-	logger.Printf("store", "LIB adjusted to %d (end of slice %d)", newLIB, sliceNum)
-	return s.saveState()
-}
-
-// ValidateAndRepairLastSlices validates the last N slices and repairs if needed
-func (s *SliceStore) ValidateAndRepairLastSlices(numSlices int) error {
-	sliceInfos := s.sliceManager.SortedSliceInfos()
-	if len(sliceInfos) == 0 {
-		logger.Println("validation", "No slices to validate")
-		return nil
-	}
-
-	// Determine which slices to validate (last N)
-	startIdx := len(sliceInfos) - numSlices
-	if startIdx < 0 {
-		startIdx = 0
-	}
-	slicesToValidate := sliceInfos[startIdx:]
-
-	logger.Printf("validation", "Validating last %d slices...", len(slicesToValidate))
-	startTime := time.Now()
-
-	// Validate each slice
-	var invalidSlices []uint32
-	for _, info := range slicesToValidate {
-		result := s.ValidateSlice(info.SliceNum)
-		if !result.Valid {
-			invalidSlices = append(invalidSlices, info.SliceNum)
-		}
-	}
-
-	if len(invalidSlices) == 0 {
-		logger.Printf("validation", "✓ Startup validation complete: %d slices checked in %.2fs",
-			len(slicesToValidate), time.Since(startTime).Seconds())
-		return nil
-	}
-
-	// Remove invalid slices (from highest to lowest to maintain consistency)
-	logger.Warning("Found %d invalid slices, removing...", len(invalidSlices))
-	for i := len(invalidSlices) - 1; i >= 0; i-- {
-		sliceNum := invalidSlices[i]
-		if err := s.RemoveSlice(sliceNum); err != nil {
-			return fmt.Errorf("failed to remove invalid slice %d: %w", sliceNum, err)
-		}
-	}
-
-	// Find the last valid slice to adjust LIB
-	sliceInfos = s.sliceManager.SortedSliceInfos()
-	if len(sliceInfos) == 0 {
-		if err := s.AdjustLIBToSlice(0); err != nil {
-			return fmt.Errorf("failed to reset LIB: %w", err)
-		}
-	} else {
-		// Adjust LIB to end of last valid slice
-		lastValid := sliceInfos[len(sliceInfos)-1]
-		if err := s.AdjustLIBToSlice(lastValid.SliceNum); err != nil {
-			return fmt.Errorf("failed to adjust LIB to slice %d: %w", lastValid.SliceNum, err)
-		}
-	}
-
-	logger.Printf("validation", "✓ Validation and repair complete in %.2fs, LIB=%d",
-		time.Since(startTime).Seconds(), s.lib)
-	return nil
-}
-
-// recoverFromCrash validates slices and ensures consistency with saved state
-// For slice-based storage, we:
-// 1. Verify each slice's data matches its metadata
-// 2. Validate actual block data (CRC) and adjust LIB to last valid block
-// 3. Rebuild indices if needed
-func (s *SliceStore) recoverFromCrash() error {
-	startTime := time.Now()
-	logger.Printf("debug-startup", "    recoverFromCrash starting...")
-
-	sliceInfos := s.sliceManager.GetSliceInfos()
-	if len(sliceInfos) == 0 {
-		logger.Printf("debug-startup", "    recoverFromCrash: no slices to recover")
-		return nil
-	}
-
-	// Find the slice containing our LIB
-	libSliceNum := s.sliceManager.BlockToSliceNum(s.lib)
-	logger.Printf("debug-startup", "    recoverFromCrash: LIB=%d in slice %d, total slices=%d", s.lib, libSliceNum, len(sliceInfos))
-
-	// Track slices beyond LIB for summary logging
-	var beyondLIBSlices []uint32
-
-	for _, info := range sliceInfos {
-		if info.SliceNum > libSliceNum {
-			beyondLIBSlices = append(beyondLIBSlices, info.SliceNum)
-			continue
-		}
-
-		if info.SliceNum == libSliceNum && !info.Finalized {
-			t0 := time.Now()
-			slice, err := s.sliceManager.GetSliceByNum(info.SliceNum)
-			logger.Printf("debug-startup", "    GetSliceByNum(%d) took %.2fs", info.SliceNum, time.Since(t0).Seconds())
-			if err != nil {
-				// Slice referenced in state.json doesn't exist (likely deleted/corrupted)
-				// Rebuild state from last available finalized slice
-				logger.Warning("Slice %d referenced in state.json does not exist - rebuilding state from available slices", info.SliceNum)
-
-				// Find last finalized slice with valid data
-				var lastValidLIB uint32
-				for i := len(sliceInfos) - 1; i >= 0; i-- {
-					if sliceInfos[i].Finalized && sliceInfos[i].EndBlock > 0 {
-						lastValidLIB = sliceInfos[i].EndBlock
-						logger.Printf("store", "Using LIB=%d from last finalized slice %d", lastValidLIB, sliceInfos[i].SliceNum)
-						break
-					}
-				}
-
-				if lastValidLIB > 0 {
-					s.lib = lastValidLIB
-					s.head = lastValidLIB
-					if err := s.saveState(); err != nil {
-						return fmt.Errorf("failed to save rebuilt state: %w", err)
-					}
-					logger.Printf("store", "State rebuilt: LIB=%d, HEAD=%d", s.lib, s.head)
-					return nil // Recovery complete
-				}
-
-				return fmt.Errorf("failed to load slice %d for recovery and no valid finalized slices found: %w", info.SliceNum, err)
-			}
-
-			blockIndex := slice.GetBlockIndex()
-			if blockIndex == nil {
-				continue
-			}
-
-			entries := blockIndex.GetAllEntries()
-			if len(entries) == 0 {
-				continue
-			}
-
-			_, maxBlock := blockIndex.Range()
-
-			// Determine the target LIB (minimum of state LIB and index maxBlock)
-			targetLIB := s.lib
-			if maxBlock < targetLIB {
-				logger.Warning("State claims LIB=%d but slice %d index only has blocks up to %d",
-					s.lib, info.SliceNum, maxBlock)
-				targetLIB = maxBlock
-			}
-
-			// Validate blocks from targetLIB backwards to find last valid block
-			// This catches cases where index entries exist but data is corrupt/missing
-			validatedLIB := uint32(0)
-			if len(entries) > 0 {
-				validatedLIB = entries[0].BlockNum - 1 // Start before first block in slice
-			}
-
-			logger.Printf("store", "Validating blocks in active slice %d (checking up to block %d)...",
-				info.SliceNum, targetLIB)
-
-			// Validate from the end backwards - stop at first valid block
-			for i := len(entries) - 1; i >= 0; i-- {
-				entry := entries[i]
-				if entry.BlockNum > targetLIB {
-					continue // Skip blocks beyond our target
-				}
-
-				// Try to read the block data (includes CRC validation)
-				_, err := slice.GetBlock(entry.BlockNum)
-				if err != nil {
-					logger.Warning("Block %d failed validation: %v", entry.BlockNum, err)
-					continue
-				}
-
-				// Found a valid block
-				validatedLIB = entry.BlockNum
-				break
-			}
-
-			if validatedLIB < s.lib {
-				logger.Warning("Adjusting LIB from %d to %d based on validated data", s.lib, validatedLIB)
-				s.lib = validatedLIB
-				s.head = validatedLIB
-
-				// Truncate block index to remove invalid entries
-				removed := blockIndex.TruncateAfter(validatedLIB)
-				if removed > 0 {
-					logger.Printf("store", "Removed %d invalid entries from block index", removed)
-				}
-
-				// Save the corrected indices (glob index no longer needed - lookups use blockIndex)
-				if err := slice.SaveIndices(); err != nil {
-					return fmt.Errorf("failed to save corrected indices: %w", err)
-				}
-
-				if err := s.saveState(); err != nil {
-					return fmt.Errorf("failed to save corrected state: %w", err)
-				}
-				logger.Printf("store", "LIB adjusted to %d based on validated block data", s.lib)
-			}
-
-			// Check for blocks beyond LIB that need index cleanup
-			for _, entry := range blockIndex.GetAllEntries() {
-				if entry.BlockNum > s.lib {
-					logger.Warning("Found block %d in slice %d beyond LIB %d - note: glob index no longer used",
-						entry.BlockNum, info.SliceNum, s.lib)
-					break
-				}
-			}
-		}
-	}
-
-	// Log summary of slices beyond LIB
-	if len(beyondLIBSlices) > 0 {
-		if len(beyondLIBSlices) <= 5 {
-			logger.Warning("Found %d slices beyond LIB slice %d: %v (may need cleanup)",
-				len(beyondLIBSlices), libSliceNum, beyondLIBSlices)
-		} else {
-			logger.Warning("Found %d slices beyond LIB slice %d (first 5: %v..., last: %d) - may need cleanup",
-				len(beyondLIBSlices), libSliceNum, beyondLIBSlices[:5], beyondLIBSlices[len(beyondLIBSlices)-1])
-		}
-	}
-
-	logger.Printf("store", "Crash recovery complete - LIB: %d", s.lib)
-	logger.Printf("debug-startup", "    recoverFromCrash completed in %.2fs", time.Since(startTime).Seconds())
-	return nil
 }
 
 // Background glob index building is no longer needed since indices are built

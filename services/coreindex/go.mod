@@ -8,6 +8,7 @@ require (
 	github.com/greymass/roborovski/libraries/chain v0.0.0
 	github.com/greymass/roborovski/libraries/compression v0.0.0
 	github.com/greymass/roborovski/libraries/config v0.0.0
+	github.com/greymass/roborovski/libraries/coremanifest v0.0.0
 	github.com/greymass/roborovski/libraries/corereader v0.0.0
 	github.com/greymass/roborovski/libraries/corestream v0.0.0
 	github.com/greymass/roborovski/libraries/encoding v0.0.0
@@ -52,6 +53,7 @@ replace (
 	github.com/greymass/roborovski/libraries/chain => ../../libraries/chain
 	github.com/greymass/roborovski/libraries/compression => ../../libraries/compression
 	github.com/greymass/roborovski/libraries/config => ../../libraries/config
+	github.com/greymass/roborovski/libraries/coremanifest => ../../libraries/coremanifest
 	github.com/greymass/roborovski/libraries/corereader => ../../libraries/corereader
 	github.com/greymass/roborovski/libraries/corestream => ../../libraries/corestream
 	github.com/greymass/roborovski/libraries/encoding => ../../libraries/encoding

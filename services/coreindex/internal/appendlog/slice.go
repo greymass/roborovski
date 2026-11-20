@@ -31,9 +31,10 @@ type Slice struct {
 	header     *DataLogHeader // Parsed header from data.log
 
 	// State
-	basePath string
-	loaded   bool
-	mu       sync.RWMutex
+	basePath       string
+	loaded         bool
+	persistedIndex int // entries of blockIndex already in blocks.index on disk
+	mu             sync.RWMutex
 }
 
 // SliceInfo is serialized metadata about a slice
@@ -69,6 +70,10 @@ type SliceManager struct {
 	slicesCreated      uint32 // Total slices created this session
 	logSliceInterval   uint32 // Log every N slices created (0 = only debug mode)
 	lastLoggedSliceNum uint32 // Last slice number we logged
+
+	// Slice directories written since the last commit, and whether the root gained a directory
+	unsynced    map[string]bool
+	rootChanged bool
 
 	// Background hash computation
 	hashQueue chan string   // Queue of slice paths needing hash computation
@@ -125,6 +130,7 @@ func NewSliceManager(basePath string, blocksPerSlice uint32, maxCachedSlices int
 		debug:              debug,
 		sliceInfos:         make([]SliceInfo, 0),
 		cachedSlices:       make(map[uint32]*Slice),
+		unsynced:           make(map[string]bool),
 		cacheOrder:         make([]uint32, 0),
 		maxCachedSlices:    maxCachedSlices,
 		logSliceInterval:   logSliceInterval,
@@ -316,6 +322,8 @@ func (sm *SliceManager) RotateSlice() error {
 	}
 	t1 = time.Now()
 
+	sm.unsynced[slicePath] = true
+
 	// Queue hash computation in background (non-blocking)
 	sm.QueueHashComputation(slicePath)
 
@@ -431,6 +439,8 @@ func (sm *SliceManager) loadOrCreateSlice(sliceNum uint32, forWriting bool) (*Sl
 		if err := os.MkdirAll(slicePath, 0755); err != nil {
 			return nil, err
 		}
+		sm.unsynced[slicePath] = true
+		sm.rootChanged = true
 
 		// Track slice creation
 		sm.slicesCreated++
@@ -691,8 +701,10 @@ func (s *Slice) Load(forWriting bool) error {
 	blockIdxPath := filepath.Join(s.basePath, "blocks.index")
 	if blockIdx, err := LoadBlockIndex(blockIdxPath); err == nil {
 		s.blockIndex = blockIdx
+		s.persistedIndex = blockIdx.Count()
 	} else {
 		s.blockIndex = NewBlockIndex()
+		s.persistedIndex = 0
 	}
 	blockIdxTime := time.Since(t0)
 
@@ -1096,9 +1108,11 @@ func (s *Slice) saveIndicesWithSync(doSync bool) error {
 	t0 := time.Now()
 
 	blockIdxPath := filepath.Join(s.basePath, "blocks.index")
-	if err := s.blockIndex.WriteToWithSync(blockIdxPath, doSync); err != nil {
+	written, err := AppendIndexFile(blockIdxPath, s.blockIndex.entries, s.persistedIndex, doSync)
+	if err != nil {
 		return fmt.Errorf("failed to save block index: %w", err)
 	}
+	s.persistedIndex = written
 	t1 := time.Now()
 
 	totalTime := t1.Sub(t0)
@@ -1123,8 +1137,8 @@ func (s *Slice) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Only save indices if not finalized (finalized slices already have indices saved)
-	if !s.Finalized {
+	// Only the writer saves indices; a read-only copy holds a stale count that would overwrite the writer's.
+	if !s.Finalized && s.blockLog != nil {
 		if err := s.saveIndices(); err != nil {
 			return err
 		}

@@ -3,6 +3,7 @@ package appendlog
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"os"
 	"sort"
 )
@@ -116,6 +117,75 @@ func (idx *BlockIndex) WriteToWithSync(path string, doSync bool) error {
 		return file.Sync()
 	}
 	return nil
+}
+
+// AppendIndexFile writes entries[persisted:] after the entries already on disk, then the 4-byte count in place.
+// Entries go first so the count never names an entry that is not there. It returns the count now on disk.
+func AppendIndexFile(path string, entries []BlockIndexEntry, persisted int, doSync bool) (int, error) {
+	if persisted > len(entries) {
+		return persisted, fmt.Errorf("index on disk has %d entries, memory has %d", persisted, len(entries))
+	}
+	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0644)
+	if err != nil {
+		return persisted, err
+	}
+	defer file.Close()
+
+	tail := entries[persisted:]
+	if len(tail) > 0 {
+		buf := make([]byte, len(tail)*32)
+		for i, entry := range tail {
+			putIndexEntry(buf[i*32:], entry)
+		}
+		if _, err := file.WriteAt(buf, 4+int64(persisted)*32); err != nil {
+			return persisted, err
+		}
+	}
+	var count [4]byte
+	binary.LittleEndian.PutUint32(count[:], uint32(len(entries)))
+	if _, err := file.WriteAt(count[:], 0); err != nil {
+		return persisted, err
+	}
+	if doSync {
+		if err := file.Sync(); err != nil {
+			return persisted, err
+		}
+	}
+	return len(entries), nil
+}
+
+func putIndexEntry(buf []byte, entry BlockIndexEntry) {
+	binary.LittleEndian.PutUint32(buf[0:4], entry.BlockNum)
+	binary.LittleEndian.PutUint64(buf[4:12], entry.Offset)
+	binary.LittleEndian.PutUint32(buf[12:16], entry.Size)
+	binary.LittleEndian.PutUint64(buf[16:24], entry.GlobMin)
+	binary.LittleEndian.PutUint64(buf[24:32], entry.GlobMax)
+}
+
+// TruncateIndexFile cuts blocks.index to its first count entries and rewrites the count.
+func TruncateIndexFile(path string, count uint32) error {
+	file, err := os.OpenFile(path, os.O_RDWR, 0644)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	stat, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	want := 4 + int64(count)*32
+	if stat.Size() < want {
+		return fmt.Errorf("%s holds %d bytes, committed index needs %d", path, stat.Size(), want)
+	}
+	if err := file.Truncate(want); err != nil {
+		return err
+	}
+	var buf [4]byte
+	binary.LittleEndian.PutUint32(buf[:], count)
+	if _, err := file.WriteAt(buf[:], 0); err != nil {
+		return err
+	}
+	return file.Sync()
 }
 
 // LoadBlockIndex loads an index from a file

@@ -21,7 +21,7 @@ type RebuildABIsResult struct {
 	Duration       time.Duration
 }
 
-func RebuildABIs(store *appendlog.SliceStore, abiPath string, actionIndexSource string) (*RebuildABIsResult, error) {
+func RebuildABIs(store *appendlog.SliceStore, abiPath string, actionIndexSource string, finish func(tmp string) error) (*RebuildABIsResult, error) {
 	startTime := time.Now()
 
 	tempPath := abiPath + ".tmp"
@@ -53,6 +53,13 @@ func RebuildABIs(store *appendlog.SliceStore, abiPath string, actionIndexSource 
 		return nil, fmt.Errorf("failed to sync ABI writer: %w", err)
 	}
 	writer.Close()
+
+	if finish != nil {
+		if err := finish(tempPath); err != nil {
+			os.RemoveAll(tempPath)
+			return nil, fmt.Errorf("failed to bind rebuilt ABI cache: %w", err)
+		}
+	}
 
 	backupPath := abiPath + ".old"
 	os.RemoveAll(backupPath)

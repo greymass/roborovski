@@ -53,10 +53,11 @@ type Config struct {
 
 	Replay      bool `help:"DESTRUCTIVE: Erase all data and restart sync from block 2"`
 	VerifyOnly  bool `name:"verify-only" help:"Deep validate all slices with CRC checks, then exit"`
-	Repair      bool `help:"With --verify-only: remove invalid slices (otherwise just report)"`
+	Repair      bool `help:"Ignored: --verify-only reports invalid slices and never removes published history"`
 	RepairSlice int  `name:"repair-slice" default:"-1" help:"Repair specific slice by rebuilding indexes from data.log"`
 	RepairAll   bool `name:"repair-all" help:"Scan all slices and repair any with invalid indexes"`
 
+	ChainID           string `name:"chain-id" help:"Chain ID (64 hex characters) recorded in the store binding and checked on every start"`
 	ABIPath           string `name:"abi-source" alias:"abi-path" help:"Path to ABI cache (default: {index-storage}/abis/)"`
 	RebuildABIs       bool   `name:"rebuild-abis" help:"Scan slices for eosio::setabi actions and rebuild the ABI cache, then exit"`
 	ActionIndexSource string `name:"actionindex-source" help:"Optional actionindex socket/address for faster ABI rebuild (streams setabi actions instead of scanning slices)"`

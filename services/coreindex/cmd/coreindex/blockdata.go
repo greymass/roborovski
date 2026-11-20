@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 
 	"github.com/greymass/roborovski/libraries/chain"
 	"github.com/greymass/roborovski/libraries/encoding"
@@ -211,4 +212,13 @@ func reader2Block(buff *bytes.Reader) *blockData {
 	binary.Read(buff, binary.LittleEndian, &(blkData.NamesInBlock))
 
 	return &blkData
+}
+
+func blockIDFromBlob(data []byte) ([32]byte, error) {
+	var id [32]byte
+	if len(data) < 40 {
+		return id, fmt.Errorf("block record is %d bytes, too short for a block ID", len(data))
+	}
+	copy(id[:], data[8:40])
+	return id, nil
 }
