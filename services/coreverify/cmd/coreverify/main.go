@@ -41,6 +41,12 @@ func main() {
 	maxBlocks := flag.Int("max-blocks", 0, "Maximum number of blocks to verify (0 = all)")
 	outputJSON := flag.Bool("output-json", false, "Output JSON report instead of human-readable")
 	debug := flag.Bool("debug", false, "Enable debug logging")
+	comparePath := flag.String("compare-path", "", "Compare --data-path against this second store instead of validating")
+	abiPath := flag.String("abi-path", "", "ABI cache beside --data-path (compare mode)")
+	compareABIPath := flag.String("compare-abi-path", "", "ABI cache beside --compare-path (compare mode)")
+	startBlock := flag.Uint("start-block", 0, "First block to compare (0 = first block of --data-path)")
+	endBlock := flag.Uint("end-block", 0, "Last block to compare (0 = last block of --data-path)")
+	abiSnapshotBlock := flag.Uint("abi-snapshot-block", 0, "Snapshot height whose --compare-abi-path entries are listed for a get_abi check instead of compared")
 	flag.Parse()
 
 	// Validate required flags
@@ -67,6 +73,35 @@ func main() {
 		// Show only coreverify categories + config, block corereader's periodic stats/live
 		logger.SetMinLevel(logger.LevelWarning)
 		logger.SetCategoryFilter(defaultCategories)
+	}
+
+	if *comparePath != "" {
+		if _, err := os.Stat(*comparePath); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: Compare path does not exist: %s\n", *comparePath)
+			os.Exit(1)
+		}
+		comparer := internal.NewComparer(internal.CompareConfig{
+			StorePath:        *dataPath,
+			ComparePath:      *comparePath,
+			ABIPath:          *abiPath,
+			CompareABIPath:   *compareABIPath,
+			StartBlock:       uint32(*startBlock),
+			EndBlock:         uint32(*endBlock),
+			ABISnapshotBlock: uint32(*abiSnapshotBlock),
+			Workers:          *workers,
+			BatchSize:        *batchSize,
+			OutputJSON:       *outputJSON,
+		})
+		report, err := comparer.Compare()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Comparison failed: %v\n", err)
+			os.Exit(2)
+		}
+		comparer.PrintReport(report)
+		if report.Status == "failed" {
+			os.Exit(2)
+		}
+		os.Exit(0)
 	}
 
 	// Create validator

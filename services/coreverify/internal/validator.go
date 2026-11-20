@@ -314,13 +314,13 @@ func (v *Validator) findLastBlockInIndex(indexPath string) (uint32, uint64, uint
 	// Read first entry for globMin
 	firstEntryOffset := 4
 	firstEntry := data[firstEntryOffset : firstEntryOffset+entrySize]
-	globMin := binary.LittleEndian.Uint64(firstEntry[12:20])
+	globMin := binary.LittleEndian.Uint64(firstEntry[16:24])
 
 	// Read last entry to get endBlock and globMax
 	lastEntryOffset := 4 + (int(count)-1)*entrySize
 	lastEntry := data[lastEntryOffset : lastEntryOffset+entrySize]
 	endBlock := binary.LittleEndian.Uint32(lastEntry[0:4])
-	globMax := binary.LittleEndian.Uint64(lastEntry[20:28])
+	globMax := binary.LittleEndian.Uint64(lastEntry[24:32])
 
 	return endBlock, globMin, globMax, nil
 }
@@ -560,8 +560,7 @@ func (v *Validator) validateDataLog(sliceInfo SliceInfo, slicePath string, block
 	// Check each block is readable
 	entries := blockIndex.GetAllEntries()
 	for _, entry := range entries {
-		// Check offset + size is within file bounds
-		endOffset := entry.Offset + uint64(entry.Size) + 4 // +4 for size prefix
+		endOffset := entry.Offset + 4 + uint64(entry.Size) + 4 // size prefix, frame, CRC trailer
 		if endOffset > uint64(fileInfo.Size()) {
 			issues = append(issues, ValidationIssue{
 				Severity: "ERROR",
