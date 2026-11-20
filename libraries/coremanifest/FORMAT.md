@@ -26,30 +26,29 @@ The ABI root defaults to `abis` under the core root and may be any other directo
 | 84 | 8 | reserved, zero |
 | 92 | 4 | checksum of bytes 0 to 91 |
 
-Both roots carry the same chain ID, UUID pair and slice span. A writer refuses to start when the two bindings disagree, when the span differs from its configuration, or when the binding's chain ID is set and differs from the chain it serves. A writer that knows the chain ID and finds it all zero records it once, in both bindings and the manifest.
+Both roots carry the same chain ID, UUID pair and slice span. A writer refuses to start when the two bindings disagree, when the span differs from its configuration, or when the binding's chain ID is set and differs from the chain it serves. A writer that knows the chain ID and finds it all zero records it once, in both bindings.
 
-## Manifest, 160 bytes
+## Manifest, 128 bytes
 
 | Offset | Size | Field |
 |---|---|---|
 | 0 | 8 | magic `RBMANIF\0` |
 | 8 | 4 | version, 1 |
 | 12 | 4 | reserved, zero |
-| 16 | 32 | chain ID |
-| 48 | 16 | core store UUID |
-| 64 | 16 | ABI store UUID |
-| 80 | 8 | epoch |
-| 88 | 4 | first block in core storage |
-| 92 | 4 | head: the last committed block, 0 for an empty store |
-| 96 | 32 | block ID of the head |
-| 128 | 8 | committed length of `data.log` in the slice that holds the head |
-| 136 | 4 | committed entry count of `blocks.index` in that slice |
-| 140 | 4 | committed entry count of `abis.index` |
-| 144 | 8 | committed length of `abis.dat` |
-| 152 | 4 | ABI snapshot floor: the first block the ABI cache covers, 0 for full history |
-| 156 | 4 | checksum of bytes 0 to 155 |
+| 16 | 16 | core store UUID |
+| 32 | 16 | ABI store UUID |
+| 48 | 8 | epoch |
+| 56 | 4 | head: the last committed block, 0 for an empty store |
+| 60 | 4 | committed entry count of `abis.index` |
+| 64 | 32 | block ID of the head |
+| 96 | 8 | committed length of `data.log` in the slice that holds the head |
+| 104 | 4 | committed entry count of `blocks.index` in that slice |
+| 108 | 4 | ABI snapshot floor: the first block the ABI cache covers, 0 for full history |
+| 112 | 8 | committed length of `abis.dat` |
+| 120 | 4 | reserved, zero |
+| 124 | 4 | checksum of bytes 0 to 123 |
 
-The manifest is the commit record. A reader uses the head, the head slice's data length and index count, and the ABI cache's lengths from one manifest read, and treats every byte or entry beyond them as absent. Slices below the head slice are committed whole. The epoch starts at 1 and changes only when a repair reset removes a suffix of slices.
+The manifest is the commit record and the only record of where a writer resumes. The store UUIDs must match the bindings. The head block ID lets a writer check blocks it applies again without reading the head record. A reader uses the head, the head slice's data length and index count, and the ABI cache's lengths from one manifest read, and treats every byte or entry beyond them as absent. Slices below the head slice are committed whole. The epoch starts at 1 and changes only when a repair reset removes a suffix of slices.
 
 A writer replaces the manifest by writing a temporary file in `control`, syncing it, renaming it over `manifest`, and syncing `control`. A reader therefore sees the old manifest or the new one, never a mix.
 

@@ -155,8 +155,5 @@ func CheckManifest(core *Binding, m *Manifest) error {
 		return fmt.Errorf("%w: manifest names store %s/%s, binding names %s/%s", ErrBindingMismatch,
 			FormatUUID(m.CoreUUID), FormatUUID(m.ABIUUID), FormatUUID(core.CoreUUID), FormatUUID(core.ABIUUID))
 	}
-	if m.ChainID != core.ChainID {
-		return fmt.Errorf("%w: manifest and binding record different chain IDs", ErrBindingMismatch)
-	}
 	return nil
 }

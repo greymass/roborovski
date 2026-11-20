@@ -44,14 +44,13 @@ type SliceStore struct {
 	batchStatsInterval time.Duration
 
 	// Metadata
-	lib        uint32
-	head       uint32
-	firstBlock uint32 // first block appended to an empty store by this instance
-	headData   []byte // stored bytes of the head block, kept for its block ID at commit
-	gated      bool   // readers see only published blocks
-	published  uint32
-	debug      bool
-	mu         sync.RWMutex
+	lib       uint32
+	head      uint32
+	headData  []byte // stored bytes of the head block, kept for its block ID at commit
+	gated     bool   // readers see only published blocks
+	published uint32
+	debug     bool
+	mu        sync.RWMutex
 }
 
 // batchStatsAccum accumulates AppendBlockBatch timing for periodic logging
@@ -121,48 +120,13 @@ func NewSliceStore(basePath string, opts SliceStoreOptions) (*SliceStore, error)
 
 	t1 := time.Now()
 	sliceInfos := sliceManager.GetSliceInfos()
-	var sliceBasedLIB uint32
-	if len(sliceInfos) > 0 {
-		for i := len(sliceInfos) - 1; i >= 0; i-- {
-			if sliceInfos[i].Finalized && sliceInfos[i].EndBlock > 0 {
-				sliceBasedLIB = sliceInfos[i].EndBlock
-				break
-			}
-		}
-		// Fallback to last slice if no finalized slices found
-		if sliceBasedLIB == 0 && len(sliceInfos) > 0 {
-			sliceBasedLIB = sliceInfos[len(sliceInfos)-1].EndBlock
+	for _, info := range sliceInfos {
+		if info.EndBlock > s.head {
+			s.head = info.EndBlock
 		}
 	}
-	logger.Printf("debug-startup", "  Calculated sliceBasedLIB=%d from %d slices in %.2fs", sliceBasedLIB, len(sliceInfos), time.Since(t1).Seconds())
-
-	t2 := time.Now()
-	stateErr := s.loadState()
-	if stateErr != nil {
-		// State file missing/corrupt - use slice metadata
-		if sliceBasedLIB > 0 {
-			s.lib = sliceBasedLIB
-			s.head = sliceBasedLIB
-			logger.Printf("store", "State file missing, calculated LIB=%d from slice metadata", s.lib)
-		} else {
-			s.lib = 0
-			s.head = 0
-		}
-	} else {
-		// State loaded successfully - but verify it's not stale/corrupted
-		if opts.Debug {
-			logger.Printf("debug", "Loaded state - LIB=%d, HEAD=%d", s.lib, s.head)
-		}
-
-		// If state LIB is significantly behind slice data, use slice data
-		// This handles cases where state.json is corrupted/stale
-		if sliceBasedLIB > s.lib+10000 { // More than 10K blocks behind = suspicious
-			logger.Warning("State file LIB=%d is significantly behind slice data LIB=%d, using slice data", s.lib, sliceBasedLIB)
-			s.lib = sliceBasedLIB
-			s.head = sliceBasedLIB
-		}
-	}
-	logger.Printf("debug-startup", "  Loaded state (LIB=%d) in %.2fs", s.lib, time.Since(t2).Seconds())
+	s.lib = s.head
+	logger.Printf("debug-startup", "  Head %d from %d slices in %.2fs", s.head, len(sliceInfos), time.Since(t1).Seconds())
 
 	// NOTE: Crash recovery is now handled by StartupValidation() called from main.go
 	// This consolidates all validation into a single pass after store initialization.
@@ -242,9 +206,6 @@ func (s *SliceStore) AppendBlock(blockNum uint32, data []byte, globMin, globMax 
 	s.cacheBlock(blockNum, dataToWrite)
 
 	// Update metadata
-	if s.head == 0 {
-		s.firstBlock = blockNum
-	}
 	s.lib = blockNum
 	s.head = blockNum
 	s.headData = dataToWrite
@@ -516,8 +477,6 @@ func (s *SliceStore) updateValidationMetadata(method string, rebuildCount int) e
 	if err != nil {
 		// Create new state if doesn't exist
 		state = &StateFile{
-			LIB:        s.lib,
-			Head:       s.head,
 			Sliced:     true,
 			SliceCount: len(s.sliceManager.GetSliceInfos()),
 		}
@@ -657,9 +616,6 @@ func (s *SliceStore) AppendBlockBatch(blocks []BlockEntry) error {
 
 	// Update metadata to last block in batch (no sync - caller handles that)
 	lastBlock := &blocks[len(blocks)-1]
-	if s.head == 0 {
-		s.firstBlock = blocks[0].BlockNum
-	}
 	s.lib = lastBlock.BlockNum
 	s.head = lastBlock.BlockNum
 
@@ -885,8 +841,6 @@ func (s *SliceStore) Close() error {
 
 // StateFile represents the persisted state metadata
 type StateFile struct {
-	LIB              uint32    `json:"lib"`
-	Head             uint32    `json:"head"`
 	Sliced           bool      `json:"sliced"`
 	SliceCount       int       `json:"slice_count"`
 	CleanShutdown    bool      `json:"clean_shutdown"`
@@ -900,8 +854,6 @@ func (s *SliceStore) saveState() error {
 	statePath := filepath.Join(s.basePath, "state.json")
 
 	state := StateFile{
-		LIB:              s.lib,
-		Head:             s.head,
 		Sliced:           true, // Mark as slice-based storage
 		SliceCount:       len(s.sliceManager.GetSliceInfos()),
 		CleanShutdown:    false,       // Will be set to true on graceful Close()
@@ -943,19 +895,6 @@ func (s *SliceStore) loadStateFile() (*StateFile, error) {
 	}
 
 	return &state, nil
-}
-
-// loadState loads LIB/HEAD metadata (backward compatible)
-func (s *SliceStore) loadState() error {
-	state, err := s.loadStateFile()
-	if err != nil {
-		return err
-	}
-
-	s.lib = state.LIB
-	s.head = state.Head
-
-	return nil
 }
 
 // GetSliceInfos returns metadata about all slices (for status/debug)
@@ -1031,9 +970,6 @@ func (s *SliceStore) AddDownloadedSlice(info *SliceInfo) error {
 	s.sliceManager.rootChanged = true
 	s.sliceManager.mu.Unlock()
 
-	if s.lib == 0 {
-		s.firstBlock = info.StartBlock
-	}
 	if info.EndBlock > s.lib {
 		s.lib = info.EndBlock
 		s.head = info.EndBlock

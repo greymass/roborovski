@@ -375,8 +375,10 @@ func TestBindingChecks(t *testing.T) {
 		t.Fatal(err)
 	}
 	p.Close()
-	if m, _ := coremanifest.ReadManifest(core); m.ChainID != chain {
-		t.Fatal("chain ID was not recorded once known")
+	for _, root := range []string{core, abi} {
+		if b, _ := coremanifest.ReadBinding(root); b.ChainID != chain {
+			t.Fatalf("chain ID was not recorded in %s once known", root)
+		}
 	}
 	if _, err := Open(Config{CoreRoot: core, ABIRoot: abi, SliceSpan: span, HeadID: headID, ChainID: [32]byte{2}}); !errors.Is(err, coremanifest.ErrBindingMismatch) {
 		t.Fatalf("other chain accepted: %v", err)
@@ -417,8 +419,8 @@ func TestAdoptExistingStore(t *testing.T) {
 
 	e := open(t, core, abi)
 	m := e.pub.Manifest()
-	if m.Head != 250 || m.FirstBlock != 2 || m.Epoch != 1 {
-		t.Fatalf("adopted manifest head=%d first=%d epoch=%d", m.Head, m.FirstBlock, m.Epoch)
+	if m.Head != 250 || m.Epoch != 1 {
+		t.Fatalf("adopted manifest head=%d epoch=%d", m.Head, m.Epoch)
 	}
 	for _, root := range []string{core, abi} {
 		if _, err := coremanifest.ReadBinding(root); err != nil {

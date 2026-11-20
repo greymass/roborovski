@@ -26,8 +26,8 @@ func TestSyncForCommitReadsHeadFromDisk(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cs.Head != 150 || cs.SliceIndexLen != 50 || cs.FirstBlock != 2 {
-		t.Fatalf("bounds head=%d len=%d first=%d", cs.Head, cs.SliceIndexLen, cs.FirstBlock)
+	if cs.Head != 150 || cs.SliceIndexLen != 50 {
+		t.Fatalf("bounds head=%d len=%d", cs.Head, cs.SliceIndexLen)
 	}
 	if !bytes.Equal(cs.HeadData, batch[len(batch)-1].Data) {
 		t.Fatal("head block read from disk differs from what was written")

@@ -206,8 +206,8 @@ func (p *Publisher) adoptStore() error {
 		return fmt.Errorf("adopt existing ABI cache: %w", err)
 	}
 	m := &coremanifest.Manifest{
-		ChainID: p.core.ChainID, CoreUUID: p.core.CoreUUID, ABIUUID: p.core.ABIUUID, Epoch: 1,
-		FirstBlock: a.FirstBlock, Head: a.Head, SliceDataEnd: a.SliceDataEnd, SliceIndexLen: a.SliceIndexLen,
+		CoreUUID: p.core.CoreUUID, ABIUUID: p.core.ABIUUID, Epoch: 1,
+		Head: a.Head, SliceDataEnd: a.SliceDataEnd, SliceIndexLen: a.SliceIndexLen,
 		ABIIndexLen: abiLen, ABIDataEnd: abiEnd,
 	}
 	if a.Head > 0 {
@@ -242,12 +242,6 @@ func (p *Publisher) recordChainID() error {
 	if err := coremanifest.WriteBinding(p.cfg.ABIRoot, p.abi); err != nil {
 		return err
 	}
-	next := *p.manifest
-	next.ChainID = p.cfg.ChainID
-	if err := coremanifest.WriteManifest(p.cfg.CoreRoot, &next); err != nil {
-		return err
-	}
-	p.manifest = &next
 	logger.Printf("store", "Recorded chain ID %x in the store binding", p.cfg.ChainID)
 	return nil
 }
@@ -289,9 +283,6 @@ func (p *Publisher) Commit(core CoreStore, abi ABIStore) (bool, error) {
 	next := *cur
 	next.Head, next.SliceDataEnd, next.SliceIndexLen = cs.Head, cs.SliceDataEnd, cs.SliceIndexLen
 	next.ABIDataEnd, next.ABIIndexLen = abiEnd, abiLen
-	if next.FirstBlock == 0 {
-		next.FirstBlock = cs.FirstBlock
-	}
 	if cs.Head != cur.Head {
 		if cs.HeadData == nil {
 			return false, fmt.Errorf("commit: head moved to %d without its block bytes", cs.Head)

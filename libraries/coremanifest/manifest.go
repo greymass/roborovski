@@ -13,7 +13,7 @@ import (
 const (
 	ManifestMagic   = "RBMANIF\x00"
 	ManifestVersion = 1
-	ManifestSize    = 160
+	ManifestSize    = 128
 	ControlDirName  = "control"
 	ManifestName    = "manifest"
 )
@@ -27,11 +27,9 @@ var (
 // Manifest is the commit record for core storage and the ABI cache.
 // Readers may use exactly the bytes and entries it names; anything beyond is uncommitted.
 type Manifest struct {
-	ChainID       [32]byte
 	CoreUUID      [16]byte
 	ABIUUID       [16]byte
 	Epoch         uint64
-	FirstBlock    uint32
 	Head          uint32
 	HeadID        [32]byte
 	SliceDataEnd  uint64
@@ -48,19 +46,17 @@ func (m *Manifest) MarshalBinary() []byte {
 	copy(b[0:8], ManifestMagic)
 	le := binary.LittleEndian
 	le.PutUint32(b[8:12], ManifestVersion)
-	copy(b[16:48], m.ChainID[:])
-	copy(b[48:64], m.CoreUUID[:])
-	copy(b[64:80], m.ABIUUID[:])
-	le.PutUint64(b[80:88], m.Epoch)
-	le.PutUint32(b[88:92], m.FirstBlock)
-	le.PutUint32(b[92:96], m.Head)
-	copy(b[96:128], m.HeadID[:])
-	le.PutUint64(b[128:136], m.SliceDataEnd)
-	le.PutUint32(b[136:140], m.SliceIndexLen)
-	le.PutUint32(b[140:144], m.ABIIndexLen)
-	le.PutUint64(b[144:152], m.ABIDataEnd)
-	le.PutUint32(b[152:156], m.ABIFloor)
-	le.PutUint32(b[156:160], crc32.Checksum(b[0:156], castagnoli))
+	copy(b[16:32], m.CoreUUID[:])
+	copy(b[32:48], m.ABIUUID[:])
+	le.PutUint64(b[48:56], m.Epoch)
+	le.PutUint32(b[56:60], m.Head)
+	le.PutUint32(b[60:64], m.ABIIndexLen)
+	copy(b[64:96], m.HeadID[:])
+	le.PutUint64(b[96:104], m.SliceDataEnd)
+	le.PutUint32(b[104:108], m.SliceIndexLen)
+	le.PutUint32(b[108:112], m.ABIFloor)
+	le.PutUint64(b[112:120], m.ABIDataEnd)
+	le.PutUint32(b[124:128], crc32.Checksum(b[0:124], castagnoli))
 	return b
 }
 
@@ -75,22 +71,20 @@ func ParseManifest(b []byte) (*Manifest, error) {
 	if v := le.Uint32(b[8:12]); v != ManifestVersion {
 		return nil, fmt.Errorf("%w: version %d, this build reads %d", ErrManifestCorrupt, v, ManifestVersion)
 	}
-	if got, want := le.Uint32(b[156:160]), crc32.Checksum(b[0:156], castagnoli); got != want {
+	if got, want := le.Uint32(b[124:128]), crc32.Checksum(b[0:124], castagnoli); got != want {
 		return nil, fmt.Errorf("%w: checksum mismatch", ErrManifestCorrupt)
 	}
 	m := &Manifest{}
-	copy(m.ChainID[:], b[16:48])
-	copy(m.CoreUUID[:], b[48:64])
-	copy(m.ABIUUID[:], b[64:80])
-	m.Epoch = le.Uint64(b[80:88])
-	m.FirstBlock = le.Uint32(b[88:92])
-	m.Head = le.Uint32(b[92:96])
-	copy(m.HeadID[:], b[96:128])
-	m.SliceDataEnd = le.Uint64(b[128:136])
-	m.SliceIndexLen = le.Uint32(b[136:140])
-	m.ABIIndexLen = le.Uint32(b[140:144])
-	m.ABIDataEnd = le.Uint64(b[144:152])
-	m.ABIFloor = le.Uint32(b[152:156])
+	copy(m.CoreUUID[:], b[16:32])
+	copy(m.ABIUUID[:], b[32:48])
+	m.Epoch = le.Uint64(b[48:56])
+	m.Head = le.Uint32(b[56:60])
+	m.ABIIndexLen = le.Uint32(b[60:64])
+	copy(m.HeadID[:], b[64:96])
+	m.SliceDataEnd = le.Uint64(b[96:104])
+	m.SliceIndexLen = le.Uint32(b[104:108])
+	m.ABIFloor = le.Uint32(b[108:112])
+	m.ABIDataEnd = le.Uint64(b[112:120])
 	return m, nil
 }
 

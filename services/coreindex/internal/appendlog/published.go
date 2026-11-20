@@ -24,8 +24,7 @@ type CoreBounds struct {
 // CommitState is what a commit publishes for core storage.
 type CommitState struct {
 	CoreBounds
-	FirstBlock uint32
-	HeadData   []byte // decompressed head block, nil when no block was appended since open
+	HeadData []byte // decompressed head block
 }
 
 type sliceDir struct {
@@ -115,7 +114,7 @@ func (s *SliceStore) SyncForCommit() (CommitState, error) {
 	sm.unsynced = make(map[string]bool)
 	sm.rootChanged = false
 
-	state := CommitState{FirstBlock: s.firstBlock}
+	var state CommitState
 	if s.head == 0 {
 		return state, nil
 	}
@@ -163,13 +162,12 @@ func (s *SliceStore) SetCommittedHead(head uint32) error {
 	defer s.mu.Unlock()
 	s.gated = true
 	s.published = head
-	if s.lib == head && s.head == head {
-		return nil
+	if s.lib != head || s.head != head {
+		s.lib = head
+		s.head = head
+		s.headData = nil
 	}
-	s.lib = head
-	s.head = head
-	s.headData = nil
-	return s.saveState()
+	return nil
 }
 
 // MarkPublished lets readers see blocks up to head once its manifest is durable.
@@ -404,8 +402,7 @@ func rewriteSliceInfos(basePath string, span, head, headSlice uint32, last Block
 // Adoption describes the committed boundary of a store written before the publication protocol.
 type Adoption struct {
 	CoreBounds
-	FirstBlock uint32
-	HeadData   []byte
+	HeadData []byte
 }
 
 // FindAdoptionBoundary takes the newest indexed block, which must pass its CRC check, as the committed head.
@@ -456,16 +453,6 @@ func FindAdoptionBoundary(basePath string, span uint32) (Adoption, error) {
 		a.SliceDataEnd = last.Offset + 8 + uint64(last.Size)
 		a.HeadData = data
 		break
-	}
-	if a.Head == 0 {
-		return a, nil
-	}
-	for _, d := range dirs {
-		idx, err := LoadBlockIndex(filepath.Join(d.path, "blocks.index"))
-		if err == nil && idx.Count() > 0 {
-			a.FirstBlock = idx.GetAllEntries()[0].BlockNum
-			break
-		}
 	}
 	return a, nil
 }

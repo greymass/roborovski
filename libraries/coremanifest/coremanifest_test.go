@@ -11,8 +11,8 @@ import (
 )
 
 func sampleManifest() *Manifest {
-	m := &Manifest{Epoch: 3, FirstBlock: 2, Head: 12345, SliceDataEnd: 9876, SliceIndexLen: 2345, ABIIndexLen: 7, ABIDataEnd: 4096, ABIFloor: 0}
-	m.ChainID[0], m.CoreUUID[1], m.ABIUUID[2], m.HeadID[31] = 1, 2, 3, 4
+	m := &Manifest{Epoch: 3, Head: 12345, SliceDataEnd: 9876, SliceIndexLen: 2345, ABIIndexLen: 7, ABIDataEnd: 4096, ABIFloor: 5}
+	m.CoreUUID[1], m.ABIUUID[2], m.HeadID[31] = 2, 3, 4
 	return m
 }
 
@@ -29,7 +29,7 @@ func TestManifestRoundTrip(t *testing.T) {
 
 func TestManifestRejectsDamage(t *testing.T) {
 	b := sampleManifest().MarshalBinary()
-	for _, off := range []int{0, 8, 92, 140, 159} {
+	for _, off := range []int{0, 8, 56, 100, 127} {
 		d := append([]byte(nil), b...)
 		d[off] ^= 0xff
 		if _, err := ParseManifest(d); !errors.Is(err, ErrManifestCorrupt) {
@@ -96,9 +96,9 @@ func TestBindingRoundTripAndPair(t *testing.T) {
 	if err := CheckManifest(cb, m); err != nil {
 		t.Fatal(err)
 	}
-	m.ChainID[0] = 1
+	m.CoreUUID[0] ^= 1
 	if err := CheckManifest(cb, m); !errors.Is(err, ErrBindingMismatch) {
-		t.Fatalf("manifest from another chain accepted")
+		t.Fatalf("manifest from another store accepted")
 	}
 }
 
