@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/crc32"
 	"os"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/greymass/roborovski/libraries/chain"
 	"github.com/greymass/roborovski/libraries/compression"
+	"github.com/greymass/roborovski/libraries/coremanifest"
 	"github.com/greymass/roborovski/libraries/logger"
 )
 
@@ -196,7 +198,7 @@ func (sm *SharedSliceMetadata) getSliceByNum(sliceNum uint32) *SliceInfo {
 }
 
 // getCachedOrScan returns shared metadata if cached, otherwise scans filesystem and creates new shared metadata
-func getCachedOrScan(basePath string) (*SharedSliceMetadata, error) {
+func getCachedOrScan(basePath string, manifest *coremanifest.Manifest) (*SharedSliceMetadata, error) {
 	scanCacheMu.RLock()
 	cached, exists := scanCache[basePath]
 	scanCacheMu.RUnlock()
@@ -214,7 +216,10 @@ func getCachedOrScan(basePath string) (*SharedSliceMetadata, error) {
 
 	// First scan for this path - try loading from cache
 	logger.Printf("config", "Scanning storage directory: %s", basePath)
-	slices, err := LoadSlicesFromCache(basePath)
+	slices, epoch, err := loadSlicesCacheWithEpoch(basePath)
+	if err == nil && manifest != nil && epoch != manifest.Epoch {
+		err = fmt.Errorf("cache epoch %d, manifest epoch %d", epoch, manifest.Epoch)
+	}
 	if err != nil {
 		logger.Printf("config", "Cache load failed (%v), scanning filesystem...", err)
 		slices, err = scanSlicesFromFilesystem(basePath)
@@ -390,6 +395,7 @@ type sliceReader struct {
 	owner           readerOwnership
 	retired         atomic.Bool // unpinned while in use; the last release closes it
 	gen             uint64      // bumped under mu when a replaced slice is reopened; offsets from an older gen are stale
+	limit           func() (uint32, bool)
 }
 
 // readerOwnership tells releaseSliceReader how a reader is held: decref, leave, or close.
@@ -474,6 +480,10 @@ type SliceReader struct {
 	statsReportInterval int64         // Seconds between reports (default 10)
 	stopStatsTicker     chan struct{} // Signal to stop background stats reporter
 	closeOnce           sync.Once     // Ensures Close() is idempotent
+
+	view         atomic.Pointer[publishedView]
+	manifestSeen atomic.Bool
+	viewMu       sync.Mutex
 }
 
 func NewSliceReader(basePath string) (*SliceReader, error) {
@@ -491,9 +501,23 @@ func NewSliceReaderWithOptions(basePath string, opts SliceReaderOptions) (*Slice
 		return nil, fmt.Errorf("storage path not found: %w", err)
 	}
 
-	// Use cached scan if available (eliminates duplicate scans)
-	sharedMetadata, err := getCachedOrScan(basePath)
+	manifest, err := coremanifest.ReadManifest(basePath)
+	switch {
+	case err == nil:
+		if manifest.Empty() {
+			return nil, fmt.Errorf("%s: %w", basePath, ErrNotReady)
+		}
+	case errors.Is(err, coremanifest.ErrNoManifest):
+		manifest = nil
+	default:
+		return nil, fmt.Errorf("read manifest: %w", err)
+	}
+
+	sharedMetadata, err := getCachedOrScan(basePath, manifest)
 	if err != nil || sharedMetadata.getSliceCount() == 0 {
+		if manifest == nil && isEmptyStore(basePath) {
+			return nil, fmt.Errorf("%s: %w", basePath, ErrNotReady)
+		}
 		logger.Printf("warning", "Filesystem scan failed (%v), falling back to slices.json", err)
 		slices, err := loadSlicesFromJSON(basePath)
 		if err != nil {
@@ -564,6 +588,11 @@ func NewSliceReaderWithOptions(basePath string, opts SliceReaderOptions) (*Slice
 	}
 	sr.lastAccessedSliceIdx.Store(-1) // Initialize to invalid
 	sr.lastStatsReport.Store(time.Now().Unix())
+	if manifest != nil {
+		if _, err := sr.RefreshView(); err != nil {
+			return nil, fmt.Errorf("apply manifest: %w", err)
+		}
+	}
 
 	if !opts.DisableStatsReporter {
 		go sr.statsReporterLoop()
@@ -631,6 +660,9 @@ func (sr *SliceReader) rebuildSliceMapByBlockLocked() {
 func (sr *SliceReader) initBlockIndexCache() error {
 	start := time.Now()
 
+	if m := sr.Manifest(); m != nil {
+		sr.blockIndexCache.SetEpoch(m.Epoch)
+	}
 	if err := sr.blockIndexCache.LoadFromFile(); err != nil {
 		logger.Printf("warning", "BlockIndexCache: failed to load from file: %v", err)
 	}
@@ -647,7 +679,7 @@ func (sr *SliceReader) initBlockIndexCache() error {
 		}
 
 		slicePath := filepath.Join(sr.basePath, fmt.Sprintf("history_%010d-%010d", slice.StartBlock, slice.MaxBlock))
-		if err := sr.blockIndexCache.LoadSliceFromBlocksIndex(slicePath, slice.SliceNum, slice.StartBlock, slice.Finalized); err != nil {
+		if err := sr.loadBlockIndexCacheSlice(slicePath, slice.SliceNum, slice.StartBlock, slice.Finalized); err != nil {
 			logger.Printf("debug", "BlockIndexCache: failed to load slice %d: %v", slice.SliceNum, err)
 			continue
 		}
@@ -668,41 +700,59 @@ func (sr *SliceReader) initBlockIndexCache() error {
 }
 
 const (
-	sliceCacheMagic   = "RBSM"
-	sliceCacheVersion = uint32(1)
-	sliceCacheHeader  = 16
-	sliceCacheEntry   = 40
+	sliceCacheMagic     = "RBSM"
+	sliceCacheVersion   = uint32(2)
+	sliceCacheHeaderV1  = 16
+	sliceCacheHeader    = 24
+	sliceCacheEntry     = 40
+	sliceCacheEpochAt   = 16
+	sliceCacheVersionV1 = uint32(1)
 )
 
 func LoadSlicesFromCache(basePath string) ([]SliceInfo, error) {
+	slices, _, err := loadSlicesCacheWithEpoch(basePath)
+	return slices, err
+}
+
+// loadSlicesCacheWithEpoch returns the cached slices and the manifest epoch they were saved under (0 for a version 1 cache).
+func loadSlicesCacheWithEpoch(basePath string) ([]SliceInfo, uint64, error) {
 	cachePath := filepath.Join(basePath, "slices.cache")
 	data, err := os.ReadFile(cachePath)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
-	if len(data) < sliceCacheHeader {
-		return nil, fmt.Errorf("cache file too small")
+	if len(data) < sliceCacheHeaderV1 {
+		return nil, 0, fmt.Errorf("cache file too small")
 	}
 
 	magic := string(data[0:4])
 	if magic != sliceCacheMagic {
-		return nil, fmt.Errorf("invalid magic: %s", magic)
+		return nil, 0, fmt.Errorf("invalid magic: %s", magic)
 	}
 
-	version := binary.LittleEndian.Uint32(data[4:8])
-	if version != sliceCacheVersion {
-		return nil, fmt.Errorf("unsupported version: %d", version)
+	headerSize := sliceCacheHeader
+	var epoch uint64
+	switch version := binary.LittleEndian.Uint32(data[4:8]); version {
+	case sliceCacheVersionV1:
+		headerSize = sliceCacheHeaderV1
+	case sliceCacheVersion:
+		if len(data) < sliceCacheHeader {
+			return nil, 0, fmt.Errorf("cache file too small")
+		}
+		epoch = binary.LittleEndian.Uint64(data[sliceCacheEpochAt : sliceCacheEpochAt+8])
+	default:
+		return nil, 0, fmt.Errorf("unsupported version: %d", version)
 	}
 
 	sliceCount := binary.LittleEndian.Uint32(data[8:12])
-	expectedSize := sliceCacheHeader + int(sliceCount)*sliceCacheEntry
+	expectedSize := headerSize + int(sliceCount)*sliceCacheEntry
 	if len(data) < expectedSize {
-		return nil, fmt.Errorf("cache file truncated: expected %d bytes, got %d", expectedSize, len(data))
+		return nil, 0, fmt.Errorf("cache file truncated: expected %d bytes, got %d", expectedSize, len(data))
 	}
 
 	slices := make([]SliceInfo, sliceCount)
-	offset := sliceCacheHeader
+	offset := headerSize
 
 	for i := uint32(0); i < sliceCount; i++ {
 		entry := data[offset : offset+sliceCacheEntry]
@@ -719,10 +769,15 @@ func LoadSlicesFromCache(basePath string) ([]SliceInfo, error) {
 		offset += sliceCacheEntry
 	}
 
-	return slices, nil
+	return slices, epoch, nil
 }
 
 func SaveSlicesToCache(basePath string, slices []SliceInfo) error {
+	return SaveSlicesToCacheEpoch(basePath, slices, 0)
+}
+
+// SaveSlicesToCacheEpoch records the manifest epoch the slices belong to; a reader under another epoch rescans.
+func SaveSlicesToCacheEpoch(basePath string, slices []SliceInfo, epoch uint64) error {
 	cachePath := filepath.Join(basePath, "slices.cache")
 	tmpPath := cachePath + ".tmp"
 
@@ -732,6 +787,7 @@ func SaveSlicesToCache(basePath string, slices []SliceInfo) error {
 	copy(buf[0:4], []byte(sliceCacheMagic))
 	binary.LittleEndian.PutUint32(buf[4:8], sliceCacheVersion)
 	binary.LittleEndian.PutUint32(buf[8:12], uint32(len(slices)))
+	binary.LittleEndian.PutUint64(buf[sliceCacheEpochAt:sliceCacheEpochAt+8], epoch)
 
 	offset := sliceCacheHeader
 	for _, slice := range slices {
@@ -1116,7 +1172,7 @@ func (sr *SliceReader) RefreshSliceMetadata() error {
 	slicePath := filepath.Join(sr.basePath, fmt.Sprintf("history_%010d-%010d", lastSlice.StartBlock, lastSlice.MaxBlock))
 	blockIndexPath := filepath.Join(slicePath, "blocks.index")
 
-	endBlock, globMin, globMax, err := findLastBlockInIndex(blockIndexPath)
+	endBlock, globMin, globMax, err := sr.boundedLastBlock(lastSlice.SliceNum, blockIndexPath)
 	if err != nil {
 		logger.Printf("warning", "Failed to refresh last slice metadata: %v", err)
 		return err
@@ -1144,7 +1200,7 @@ func (sr *SliceReader) RefreshSliceMetadata() error {
 	sr.sharedMetadata.updateLastSliceEndBlock(endBlock, globMin, globMax)
 
 	if sr.blockIndexCache != nil {
-		if err := sr.blockIndexCache.LoadSliceFromBlocksIndex(slicePath, lastSlice.SliceNum, lastSlice.StartBlock, false); err != nil {
+		if err := sr.loadBlockIndexCacheSlice(slicePath, lastSlice.SliceNum, lastSlice.StartBlock, false); err != nil {
 			logger.Printf("warning", "Failed to update blockIndexCache for slice %d: %v", lastSlice.SliceNum, err)
 		}
 	}
@@ -1296,6 +1352,9 @@ func (sr *SliceReader) IsSliceFinalized(sliceNum uint32) (bool, error) {
 }
 
 func (sr *SliceReader) findSliceForBlock(blockNum uint32) (*SliceInfo, error) {
+	if err := sr.checkBlockBound(blockNum); err != nil {
+		return nil, err
+	}
 	cachedIdx := int(sr.lastAccessedSliceIdx.Load())
 	if cachedIdx >= 0 {
 		slice := sr.sharedMetadata.getSlice(cachedIdx)
@@ -1330,7 +1389,7 @@ func (sr *SliceReader) findSliceForBlock(blockNum uint32) (*SliceInfo, error) {
 		slicePath := filepath.Join(sr.basePath, fmt.Sprintf("history_%010d-%010d", sliceStartBlock, sliceMaxBlock))
 		if _, err := os.Stat(slicePath); err == nil {
 			blockIndexPath := filepath.Join(slicePath, "blocks.index")
-			endBlock, globMin, globMax, err := findLastBlockInIndex(blockIndexPath)
+			endBlock, globMin, globMax, err := sr.boundedLastBlock(sliceKey, blockIndexPath)
 			if err != nil {
 				return nil, fmt.Errorf("block %d in new slice %d but index not ready", blockNum, sliceKey)
 			}
@@ -1360,7 +1419,7 @@ func (sr *SliceReader) findSliceForBlock(blockNum uint32) (*SliceInfo, error) {
 				if !prevSlice.Finalized {
 					prevSlicePath := filepath.Join(sr.basePath, fmt.Sprintf("history_%010d-%010d", prevSlice.StartBlock, prevSlice.MaxBlock))
 					prevBlockIndexPath := filepath.Join(prevSlicePath, "blocks.index")
-					if prevEndBlock, prevGlobMin, prevGlobMax, err := findLastBlockInIndex(prevBlockIndexPath); err == nil {
+					if prevEndBlock, prevGlobMin, prevGlobMax, err := sr.boundedLastBlock(prevSlice.SliceNum, prevBlockIndexPath); err == nil {
 						prevSlice.EndBlock = prevEndBlock
 						prevSlice.GlobMin = prevGlobMin
 						prevSlice.GlobMax = prevGlobMax
@@ -1380,7 +1439,7 @@ func (sr *SliceReader) findSliceForBlock(blockNum uint32) (*SliceInfo, error) {
 			sr.lastAccessedSliceIdx.Store(int32(newIdx))
 
 			if sr.blockIndexCache != nil {
-				if err := sr.blockIndexCache.LoadSliceFromBlocksIndex(slicePath, sliceKey, sliceStartBlock, false); err != nil {
+				if err := sr.loadBlockIndexCacheSlice(slicePath, sliceKey, sliceStartBlock, false); err != nil {
 					logger.Printf("debug", "BlockIndexCache: failed to load new slice %d: %v", sliceKey, err)
 				}
 			}
@@ -1410,7 +1469,7 @@ func (sr *SliceReader) findSliceForBlock(blockNum uint32) (*SliceInfo, error) {
 
 		slicePath := filepath.Join(sr.basePath, fmt.Sprintf("history_%010d-%010d", slice.StartBlock, slice.MaxBlock))
 		blockIndexPath := filepath.Join(slicePath, "blocks.index")
-		endBlock, globMin, globMax, err := findLastBlockInIndex(blockIndexPath)
+		endBlock, globMin, globMax, err := sr.boundedLastBlock(slice.SliceNum, blockIndexPath)
 		if err != nil {
 			if slice.EndBlock == 0 {
 				return nil, fmt.Errorf("block %d: slice %d has stale metadata and index not readable: %w", blockNum, slice.SliceNum, err)
@@ -2024,8 +2083,13 @@ func (sr *SliceReader) loadSliceReaderFromDisk(sliceNum uint32) (*sliceReader, e
 	logger.Printf("debug", "Loading slice %d from %s (EndBlock=%d, Finalized=%v)",
 		sliceNum, slicePath, sliceInfo.EndBlock, sliceInfo.Finalized)
 
-	reader, err := newSliceReader(slicePath, sliceNum)
+	reader, err := newSliceReader(slicePath, sliceNum, sr.headLimit)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			if changed, _ := sr.RefreshView(); changed {
+				return nil, fmt.Errorf("slice %d removed by a repair: %w", sliceNum, ErrBeyondHead)
+			}
+		}
 		return nil, fmt.Errorf("failed to load slice %d: %w", sliceNum, err)
 	}
 
@@ -2178,7 +2242,9 @@ func (sr *SliceReader) releaseSliceReader(reader *sliceReader) {
 	}
 	switch reader.owner {
 	case ownerCached:
-		reader.refCount.Add(-1)
+		if reader.refCount.Add(-1) == 0 && reader.retired.Load() {
+			reader.close()
+		}
 	case ownerPinned:
 		if reader.refCount.Add(-1) == 0 && reader.retired.Load() {
 			reader.close()
@@ -2188,10 +2254,11 @@ func (sr *SliceReader) releaseSliceReader(reader *sliceReader) {
 	}
 }
 
-func newSliceReader(basePath string, sliceNum uint32) (*sliceReader, error) {
+func newSliceReader(basePath string, sliceNum uint32, limit func() (uint32, bool)) (*sliceReader, error) {
 	reader := &sliceReader{
 		sliceNum: sliceNum,
 		basePath: basePath,
+		limit:    limit,
 	}
 
 	blockIdxPath := filepath.Join(basePath, "blocks.index")
@@ -2199,6 +2266,7 @@ func newSliceReader(basePath string, sliceNum uint32) (*sliceReader, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to load block index: %w", err)
 	}
+	blockIdx = boundIndex(blockIdx, limit)
 	reader.blockIndex = blockIdx
 
 	// Cache minimum block number for binarySearchGlob fallback
@@ -2289,7 +2357,7 @@ func (r *sliceReader) loadBlockIndexLocked() (map[uint32]blockIndexEntry, error)
 			return nil, err
 		}
 		if !r.dataLogReplacedLocked() {
-			return idx, nil
+			return boundIndex(idx, r.limit), nil
 		}
 	}
 	reopened, err := r.reopenIfReplacedLocked()
@@ -2313,6 +2381,7 @@ func (r *sliceReader) reopenIfReplacedLocked() (bool, error) {
 		return false, fmt.Errorf("failed to reopen replaced slice %d: %w", r.sliceNum, err)
 	}
 	blockIdx, err := loadBlockIndexSimple(filepath.Join(r.basePath, "blocks.index"))
+	blockIdx = boundIndex(blockIdx, r.limit)
 	if err == nil && !blockIndexMatchesData(blockIdx, mmapData) {
 		err = fmt.Errorf("blocks.index does not match the new data.log")
 	}
@@ -3981,6 +4050,21 @@ func parseRawBlockWithData(blockData []byte, blockNum uint32, filterFunc ActionF
 }
 
 func (sr *SliceReader) GetStateProps(bypassCache bool) (uint32, uint32, error) {
+	if bypassCache || !sr.manifestSeen.Load() {
+		if _, err := sr.RefreshView(); err != nil {
+			return 0, 0, err
+		}
+	}
+	if lim, ok := sr.headLimit(); ok {
+		if lim == 0 {
+			return 0, 0, ErrNotReady
+		}
+		if bypassCache {
+			sr.discoverSlicesThrough(lim)
+		}
+		return lim, lim, nil
+	}
+
 	sliceCount := sr.sharedMetadata.getSliceCount()
 
 	if sliceCount == 0 {
@@ -4059,7 +4143,7 @@ func (sr *SliceReader) GetStateProps(bypassCache bool) (uint32, uint32, error) {
 			alreadyKnown := false
 			if sr.blockIndexCache != nil {
 				alreadyKnown = sr.blockIndexCache.HasSlice(nextSliceNum)
-				if err := sr.blockIndexCache.LoadSliceFromBlocksIndex(nextSlicePath, nextSliceNum, nextSliceStart, false); err != nil {
+				if err := sr.loadBlockIndexCacheSlice(nextSlicePath, nextSliceNum, nextSliceStart, false); err != nil {
 					logger.Printf("debug", "BlockIndexCache: failed to load new slice %d: %v", nextSliceNum, err)
 				}
 			}
@@ -4092,7 +4176,7 @@ func (sr *SliceReader) GetStateProps(bypassCache bool) (uint32, uint32, error) {
 		if currentCount > 0 && endBlock != lastSlice.EndBlock {
 			sr.sharedMetadata.updateLastSliceEndBlock(endBlock, globMin, globMax)
 			if sr.blockIndexCache != nil {
-				if err := sr.blockIndexCache.LoadSliceFromBlocksIndex(slicePath, lastSlice.SliceNum, lastSlice.StartBlock, false); err != nil {
+				if err := sr.loadBlockIndexCacheSlice(slicePath, lastSlice.SliceNum, lastSlice.StartBlock, false); err != nil {
 					logger.Printf("debug", "BlockIndexCache: failed to refresh active slice %d: %v", lastSlice.SliceNum, err)
 				}
 			}

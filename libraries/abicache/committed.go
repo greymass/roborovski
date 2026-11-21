@@ -7,6 +7,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
+
+	"github.com/greymass/roborovski/libraries/coremanifest"
 )
 
 const (
@@ -133,4 +136,36 @@ func CommittedBounds(basePath string, head uint32) (dataEnd uint64, indexLen uin
 		return 0, 0, fmt.Errorf("ABI record at %d runs past the end of abis.dat: %w", offset, io.ErrUnexpectedEOF)
 	}
 	return end, uint32(keep), nil
+}
+
+// ManifestLimit reports the ABI entry count committed by the manifest under coreRoot, re-reading it only when it changes.
+// Before any manifest is seen it reports no limit; after one has been seen, a missing manifest limits to zero.
+func ManifestLimit(coreRoot string) func() (uint32, bool) {
+	var (
+		mu    sync.Mutex
+		seen  bool
+		ino   uint64
+		mtime int64
+		count uint32
+	)
+	return func() (uint32, bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		st, err := os.Stat(coremanifest.ManifestPath(coreRoot))
+		if err != nil {
+			if seen {
+				return 0, true
+			}
+			return 0, false
+		}
+		if seen && inode(st) == ino && st.ModTime().UnixNano() == mtime {
+			return count, true
+		}
+		m, err := coremanifest.ReadManifest(coreRoot)
+		if err != nil {
+			return count, seen
+		}
+		seen, ino, mtime, count = true, inode(st), st.ModTime().UnixNano(), m.ABIIndexLen
+		return count, true
+	}
 }

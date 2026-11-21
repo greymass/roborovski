@@ -20,7 +20,7 @@ func TestScanCache(t *testing.T) {
 	// First call should scan filesystem
 	t.Run("FirstScanCachesResult", func(t *testing.T) {
 		start := time.Now()
-		slices1, err := getCachedOrScan(testDataPath)
+		slices1, err := getCachedOrScan(testDataPath, nil)
 		duration1 := time.Since(start)
 
 		if err != nil {
@@ -43,7 +43,7 @@ func TestScanCache(t *testing.T) {
 	// Second call should use cache (much faster)
 	t.Run("SecondScanUsesCache", func(t *testing.T) {
 		start := time.Now()
-		slices2, err := getCachedOrScan(testDataPath)
+		slices2, err := getCachedOrScan(testDataPath, nil)
 		duration2 := time.Since(start)
 
 		if err != nil {
@@ -62,8 +62,8 @@ func TestScanCache(t *testing.T) {
 
 	// Verify cache returns identical data
 	t.Run("CacheReturnsIdenticalData", func(t *testing.T) {
-		slices1, _ := getCachedOrScan(testDataPath)
-		slices2, _ := getCachedOrScan(testDataPath)
+		slices1, _ := getCachedOrScan(testDataPath, nil)
+		slices2, _ := getCachedOrScan(testDataPath, nil)
 
 		count1 := slices1.getSliceCount()
 		count2 := slices2.getSliceCount()
@@ -93,7 +93,7 @@ func TestBuildGlobRangeIndexFromSlices(t *testing.T) {
 		t.Skipf("Test data not available: %v", err)
 	}
 
-	slices, err := getCachedOrScan(testDataPath)
+	slices, err := getCachedOrScan(testDataPath, nil)
 	if err != nil {
 		t.Fatalf("Failed to scan: %v", err)
 	}

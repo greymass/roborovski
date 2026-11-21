@@ -939,14 +939,18 @@ func TestNewReaderErrors(t *testing.T) {
 		}
 	})
 
-	t.Run("corrupted index file (wrong size)", func(t *testing.T) {
+	t.Run("partial index entry is rounded down", func(t *testing.T) {
 		dir := t.TempDir()
 		os.WriteFile(filepath.Join(dir, "abis.dat"), []byte{}, 0644)
 		os.WriteFile(filepath.Join(dir, "abis.index"), []byte{0x01, 0x02, 0x03}, 0644)
 
-		_, err := NewReader(dir)
-		if err == nil {
-			t.Error("expected error for corrupted index (size not multiple of 20)")
+		r, err := NewReader(dir)
+		if err != nil {
+			t.Fatalf("partial entry should be ignored: %v", err)
+		}
+		defer r.Close()
+		if r.indexLen != 0 {
+			t.Errorf("indexLen = %d, want 0", r.indexLen)
 		}
 	})
 

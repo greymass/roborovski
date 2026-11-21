@@ -379,7 +379,7 @@ func TestReadBlockData_IndexReloadOnMiss(t *testing.T) {
 	}
 
 	// Open slice reader
-	reader, err := newSliceReader(slicePath, 0)
+	reader, err := newSliceReader(slicePath, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -422,7 +422,7 @@ func TestReadBlockData_MmapBoundsCheck(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reader, err := newSliceReader(slicePath, 0)
+	reader, err := newSliceReader(slicePath, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -482,7 +482,7 @@ func TestReadBlockData_CompressionDetection(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reader, err := newSliceReader(slicePath, 0)
+	reader, err := newSliceReader(slicePath, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -526,7 +526,7 @@ func TestRemapDataLog_SuccessfulRemap(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reader, err := newSliceReader(slicePath, 0)
+	reader, err := newSliceReader(slicePath, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -586,7 +586,7 @@ func TestRemapDataLog_FileNotGrown(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reader, err := newSliceReader(slicePath, 0)
+	reader, err := newSliceReader(slicePath, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

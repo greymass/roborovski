@@ -5,6 +5,7 @@ go 1.25.3
 require (
 	github.com/greymass/roborovski/libraries/corestream v0.0.0
 	github.com/greymass/roborovski/libraries/chain v0.0.0
+	github.com/greymass/roborovski/libraries/coremanifest v0.0.0
 	github.com/greymass/roborovski/libraries/encoding v0.0.0
 	github.com/klauspost/compress v1.18.1
 )
@@ -19,6 +20,7 @@ require (
 replace (
 	github.com/greymass/roborovski/libraries/corestream => ../corestream
 	github.com/greymass/roborovski/libraries/chain => ../chain
+	github.com/greymass/roborovski/libraries/coremanifest => ../coremanifest
 	github.com/greymass/roborovski/libraries/encoding => ../encoding
 	github.com/greymass/roborovski/libraries/enforce => ../enforce
 )

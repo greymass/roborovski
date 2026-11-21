@@ -243,7 +243,7 @@ func TestPinnedSliceReaderRecoversFromReplacementWithShiftedOffsets(t *testing.T
 		t.Fatal("pinned reader still holds the deleted data.log")
 	}
 
-	fresh, err := newSliceReader(live, target.SliceNum)
+	fresh, err := newSliceReader(live, target.SliceNum, nil)
 	if err != nil {
 		t.Fatalf("fresh reader: %v", err)
 	}
@@ -331,7 +331,7 @@ func (f *replacementFixture) replaceShifted(t *testing.T, pad int) {
 
 func (f *replacementFixture) expectedBlocks(t *testing.T) map[uint32][]byte {
 	t.Helper()
-	fresh, err := newSliceReader(f.live, f.target.SliceNum)
+	fresh, err := newSliceReader(f.live, f.target.SliceNum, nil)
 	if err != nil {
 		t.Fatalf("fresh reader: %v", err)
 	}

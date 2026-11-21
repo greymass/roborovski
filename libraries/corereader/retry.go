@@ -64,6 +64,7 @@ func IsRetriableError(err error) bool {
 		"i/o timeout",
 		"block index too small",
 		"block not found",
+		"not ready",
 		"not found in slice",
 	}
 

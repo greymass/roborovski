@@ -18,6 +18,7 @@ const (
 	BlockIndexCacheVersion = 1
 	BlockIndexCacheHeader  = 32
 	BlockIndexEntrySize    = 32
+	blockIndexCacheEpochAt = 16
 )
 
 type BlockIndexCacheEntry struct {
@@ -67,6 +68,7 @@ type BlockIndexCache struct {
 
 	maxFinalizedSlice uint32
 	dirty             atomic.Bool
+	epoch             uint64
 
 	cacheFilePath string
 	mmapData      []byte
@@ -299,9 +301,19 @@ func (c *BlockIndexCache) LoadFromFile() error {
 
 	numSlices := binary.LittleEndian.Uint32(mmapData[8:12])
 	maxSlice := binary.LittleEndian.Uint32(mmapData[12:16])
+	fileEpoch := binary.LittleEndian.Uint64(mmapData[blockIndexCacheEpochAt : blockIndexCacheEpochAt+8])
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	if fileEpoch != c.epoch {
+		syscall.Munmap(mmapData)
+		file.Close()
+		c.dirty.Store(true)
+		logger.Printf("config", "BlockIndexCache: %s has epoch %d, store has epoch %d; rebuilding from blocks.index",
+			c.cacheFilePath, fileEpoch, c.epoch)
+		return nil
+	}
 
 	c.mmapFile = file
 	c.mmapData = mmapData
@@ -382,6 +394,7 @@ func (c *BlockIndexCache) SaveToFile() error {
 	binary.LittleEndian.PutUint32(data[4:8], BlockIndexCacheVersion)
 	binary.LittleEndian.PutUint32(data[8:12], uint32(len(finalizedSlices)))
 	binary.LittleEndian.PutUint32(data[12:16], c.maxFinalizedSlice)
+	binary.LittleEndian.PutUint64(data[blockIndexCacheEpochAt:blockIndexCacheEpochAt+8], c.epoch)
 
 	offset := BlockIndexCacheHeader
 	for _, slice := range finalizedSlices {
@@ -439,6 +452,11 @@ func (c *BlockIndexCache) Close() error {
 }
 
 func (c *BlockIndexCache) LoadSliceFromBlocksIndex(slicePath string, sliceNum, startBlock uint32, finalized bool) error {
+	return c.LoadSliceFromBlocksIndexBounded(slicePath, sliceNum, startBlock, finalized, ^uint32(0))
+}
+
+// LoadSliceFromBlocksIndexBounded loads only entries at or below maxBlock.
+func (c *BlockIndexCache) LoadSliceFromBlocksIndexBounded(slicePath string, sliceNum, startBlock uint32, finalized bool, maxBlock uint32) error {
 	blockIndexPath := slicePath + "/blocks.index"
 
 	data, err := os.ReadFile(blockIndexPath)
@@ -459,6 +477,9 @@ func (c *BlockIndexCache) LoadSliceFromBlocksIndex(slicePath string, sliceNum, s
 			break
 		}
 
+		if binary.LittleEndian.Uint32(data[offset:offset+4]) > maxBlock {
+			break
+		}
 		entries = append(entries, BlockIndexCacheEntry{
 			BlockNum:   binary.LittleEndian.Uint32(data[offset : offset+4]),
 			FileOffset: binary.LittleEndian.Uint64(data[offset+4 : offset+12]),
@@ -472,4 +493,34 @@ func (c *BlockIndexCache) LoadSliceFromBlocksIndex(slicePath string, sliceNum, s
 	c.AddSlice(sliceNum, startBlock, entries, finalized)
 
 	return nil
+}
+
+// SetEpoch sets the manifest epoch this cache belongs to; call it before LoadFromFile.
+func (c *BlockIndexCache) SetEpoch(epoch uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.epoch != epoch {
+		c.epoch = epoch
+		c.dirty.Store(true)
+	}
+}
+
+// DropFrom removes slices numbered sliceNum and above.
+func (c *BlockIndexCache) DropFrom(sliceNum uint32) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for num := range c.slices {
+		if num >= sliceNum {
+			delete(c.slices, num)
+		}
+	}
+	if c.maxFinalizedSlice >= sliceNum {
+		c.maxFinalizedSlice = 0
+		for num, sl := range c.slices {
+			if sl.Finalized && num > c.maxFinalizedSlice {
+				c.maxFinalizedSlice = num
+			}
+		}
+	}
+	c.dirty.Store(true)
 }

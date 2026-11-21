@@ -294,3 +294,20 @@ func ReturnSliceData(data []byte) {
 	buf := data[:cap(data)]
 	sliceDataPool.Put(&buf)
 }
+
+// DropFrom forgets buffers for slices numbered sliceNum and above; readers holding one keep their copy.
+func (pool *SliceBufferPool) DropFrom(sliceNum uint32) {
+	if pool == nil || !pool.enabled {
+		return
+	}
+	pool.mu.Lock()
+	defer pool.mu.Unlock()
+	for num, buf := range pool.buffers {
+		if num < sliceNum {
+			continue
+		}
+		pool.lruList.Remove(buf.lruElem)
+		delete(pool.buffers, num)
+		pool.usedBytes -= buf.sizeBytes
+	}
+}

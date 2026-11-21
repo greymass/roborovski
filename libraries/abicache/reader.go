@@ -15,11 +15,16 @@ import (
 )
 
 type Reader struct {
+	basePath  string
 	dataFile  *os.File
 	indexFile *os.File
 	indexMmap []byte
 	indexLen  int
 	indexSize int64
+	indexIno  uint64
+	limit     func() (uint32, bool)
+	limitLen  uint32
+	limited   bool
 
 	parsedABIs   map[int64]*goeosio.Abi
 	parsedABIsMu sync.RWMutex
@@ -29,31 +34,76 @@ type Reader struct {
 
 func NewReader(basePath string) (*Reader, error) {
 	r := &Reader{
+		basePath:   basePath,
 		parsedABIs: make(map[int64]*goeosio.Abi),
 	}
-
-	dataPath := filepath.Join(basePath, "abis.dat")
-	dataFile, err := os.OpenFile(dataPath, os.O_RDONLY, 0644)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open data file: %w", err)
-	}
-	r.dataFile = dataFile
-
-	indexPath := filepath.Join(basePath, "abis.index")
-	indexFile, err := os.OpenFile(indexPath, os.O_RDONLY, 0644)
-	if err != nil {
-		dataFile.Close()
-		return nil, fmt.Errorf("failed to open index file: %w", err)
-	}
-	r.indexFile = indexFile
-
-	if err := r.loadIndex(); err != nil {
-		indexFile.Close()
-		dataFile.Close()
+	if err := r.openFiles(); err != nil {
 		return nil, err
 	}
-
+	if err := r.loadIndex(); err != nil {
+		r.closeFiles()
+		return nil, err
+	}
 	return r, nil
+}
+
+// SetLimit bounds the reader to the first n index entries whenever fn reports ok, as a manifest's ABI entry count does.
+func (r *Reader) SetLimit(fn func() (n uint32, ok bool)) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.limit = fn
+	return r.loadIndex()
+}
+
+func (r *Reader) openFiles() error {
+	dataFile, err := os.OpenFile(filepath.Join(r.basePath, "abis.dat"), os.O_RDONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open data file: %w", err)
+	}
+	indexFile, err := os.OpenFile(filepath.Join(r.basePath, "abis.index"), os.O_RDONLY, 0644)
+	if err != nil {
+		dataFile.Close()
+		return fmt.Errorf("failed to open index file: %w", err)
+	}
+	st, err := indexFile.Stat()
+	if err != nil {
+		dataFile.Close()
+		indexFile.Close()
+		return fmt.Errorf("failed to stat index file: %w", err)
+	}
+	r.dataFile = dataFile
+	r.indexFile = indexFile
+	r.indexIno = inode(st)
+	return nil
+}
+
+func (r *Reader) closeFiles() {
+	if r.indexMmap != nil {
+		syscall.Munmap(r.indexMmap)
+		r.indexMmap = nil
+	}
+	if r.indexFile != nil {
+		r.indexFile.Close()
+		r.indexFile = nil
+	}
+	if r.dataFile != nil {
+		r.dataFile.Close()
+		r.dataFile = nil
+	}
+}
+
+func inode(fi os.FileInfo) uint64 {
+	if st, ok := fi.Sys().(*syscall.Stat_t); ok {
+		return uint64(st.Ino)
+	}
+	return 0
+}
+
+func (r *Reader) currentLimit() (uint32, bool) {
+	if r.limit == nil {
+		return 0, false
+	}
+	return r.limit()
 }
 
 func (r *Reader) loadIndex() error {
@@ -63,22 +113,25 @@ func (r *Reader) loadIndex() error {
 	}
 
 	indexSize := stat.Size()
-	if indexSize%20 != 0 {
-		return fmt.Errorf("index file corrupted (size not multiple of 20)")
+	entries := indexSize / indexEntrySize
+	lim, limited := r.currentLimit()
+	if limited && int64(lim) < entries {
+		entries = int64(lim)
 	}
-	r.indexLen = int(indexSize / 20)
+	r.indexLen = int(entries)
 	r.indexSize = indexSize
+	r.limitLen, r.limited = lim, limited
 
 	if r.indexMmap != nil {
 		syscall.Munmap(r.indexMmap)
 		r.indexMmap = nil
 	}
 
-	if indexSize > 0 {
+	if entries > 0 {
 		indexMmap, err := syscall.Mmap(
 			int(r.indexFile.Fd()),
 			0,
-			int(indexSize),
+			int(entries*indexEntrySize),
 			syscall.PROT_READ,
 			syscall.MAP_SHARED,
 		)
@@ -92,16 +145,33 @@ func (r *Reader) loadIndex() error {
 }
 
 func (r *Reader) checkIndexGrowth() error {
+	if st, err := os.Stat(filepath.Join(r.basePath, "abis.index")); err == nil && inode(st) != r.indexIno {
+		return r.reopen()
+	}
 	stat, err := r.indexFile.Stat()
 	if err != nil {
 		return fmt.Errorf("failed to stat index file: %w", err)
 	}
-
-	if stat.Size() > r.indexSize {
+	if stat.Size() < r.indexSize {
+		return r.reopen()
+	}
+	lim, limited := r.currentLimit()
+	if stat.Size() > r.indexSize || lim != r.limitLen || limited != r.limited {
 		return r.loadIndex()
 	}
-
 	return nil
+}
+
+// reopen follows a replaced or shortened index; parsed ABIs are keyed by data offset, which a reset reuses.
+func (r *Reader) reopen() error {
+	r.closeFiles()
+	r.parsedABIsMu.Lock()
+	r.parsedABIs = make(map[int64]*goeosio.Abi)
+	r.parsedABIsMu.Unlock()
+	if err := r.openFiles(); err != nil {
+		return err
+	}
+	return r.loadIndex()
 }
 
 func (r *Reader) Get(contract uint64, atBlock uint32) ([]byte, error) {

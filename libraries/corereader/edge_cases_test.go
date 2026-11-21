@@ -303,7 +303,7 @@ func TestRemapDataLog_NoGrowth(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reader, err := newSliceReader(slicePath, 0)
+	reader, err := newSliceReader(slicePath, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -7,6 +7,7 @@ require (
 	github.com/greymass/roborovski/libraries/abicache v0.0.0
 	github.com/greymass/roborovski/libraries/chain v0.0.0
 	github.com/greymass/roborovski/libraries/corereader v0.0.0
+	github.com/greymass/roborovski/libraries/coremanifest v0.0.0 // indirect
 	github.com/greymass/roborovski/libraries/logger v0.0.0
 	github.com/greymass/roborovski/libraries/openapi v0.0.0
 	github.com/greymass/roborovski/libraries/server v0.0.0
@@ -45,6 +46,7 @@ replace (
 	github.com/greymass/roborovski/libraries/chain => ../../libraries/chain
 	github.com/greymass/roborovski/libraries/compression => ../../libraries/compression
 	github.com/greymass/roborovski/libraries/corereader => ../../libraries/corereader
+	github.com/greymass/roborovski/libraries/coremanifest => ../../libraries/coremanifest
 	github.com/greymass/roborovski/libraries/corestream => ../../libraries/corestream
 	github.com/greymass/roborovski/libraries/encoding => ../../libraries/encoding
 	github.com/greymass/roborovski/libraries/enforce => ../../libraries/enforce

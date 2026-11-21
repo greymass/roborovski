@@ -49,7 +49,7 @@ func TestReadBlockData_DoubleCheckLocking(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reader, err := newSliceReader(slicePath, 0)
+	reader, err := newSliceReader(slicePath, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +135,7 @@ func TestReadBlockData_ConcurrentIndexReload(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reader, err := newSliceReader(slicePath, 0)
+	reader, err := newSliceReader(slicePath, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +189,7 @@ func TestReadBlockData_BoundsCheckAfterRemap(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reader, err := newSliceReader(slicePath, 0)
+	reader, err := newSliceReader(slicePath, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +256,7 @@ func TestReadBlockData_CompressedBlock(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reader, err := newSliceReader(slicePath, 0)
+	reader, err := newSliceReader(slicePath, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -319,7 +319,7 @@ func TestReadBlockData_CorruptedCompressedBlock(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reader, err := newSliceReader(slicePath, 0)
+	reader, err := newSliceReader(slicePath, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -362,7 +362,7 @@ func TestReadBlockData_MmapDataNil(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reader, err := newSliceReader(slicePath, 0)
+	reader, err := newSliceReader(slicePath, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
