@@ -20,6 +20,17 @@ func SyncDir(dir string) error {
 
 // WriteFileAtomic replaces path with data so a reader sees either the old or the new file, durably.
 func WriteFileAtomic(path string, data []byte) error {
+	if err := writeTempAndRename(path, data, true); err != nil {
+		return err
+	}
+	return SyncDir(filepath.Dir(path))
+}
+
+func replaceFile(path string, data []byte) error {
+	return writeTempAndRename(path, data, false)
+}
+
+func writeTempAndRename(path string, data []byte, sync bool) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
@@ -38,9 +49,11 @@ func WriteFileAtomic(path string, data []byte) error {
 		cleanup()
 		return err
 	}
-	if err := tmp.Sync(); err != nil {
-		cleanup()
-		return err
+	if sync {
+		if err := tmp.Sync(); err != nil {
+			cleanup()
+			return err
+		}
 	}
 	if err := tmp.Close(); err != nil {
 		os.Remove(tmpPath)
@@ -50,5 +63,5 @@ func WriteFileAtomic(path string, data []byte) error {
 		os.Remove(tmpPath)
 		return err
 	}
-	return SyncDir(dir)
+	return nil
 }

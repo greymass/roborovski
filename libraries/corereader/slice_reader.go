@@ -483,6 +483,7 @@ type SliceReader struct {
 
 	view         atomic.Pointer[publishedView]
 	manifestSeen atomic.Bool
+	rejectedView publishedView
 	viewMu       sync.Mutex
 }
 
@@ -501,16 +502,21 @@ func NewSliceReaderWithOptions(basePath string, opts SliceReaderOptions) (*Slice
 		return nil, fmt.Errorf("storage path not found: %w", err)
 	}
 
-	manifest, err := coremanifest.ReadManifest(basePath)
+	manifest, err := coremanifest.ReadPublished(basePath)
 	switch {
 	case err == nil:
 		if manifest.Empty() {
 			return nil, fmt.Errorf("%s: %w", basePath, ErrNotReady)
 		}
-	case errors.Is(err, coremanifest.ErrNoManifest):
+	case errors.Is(err, coremanifest.ErrNoPublished):
+		if coremanifest.HasManifest(basePath) {
+			return nil, fmt.Errorf("%s: %w", basePath, ErrNotReady)
+		}
 		manifest = nil
+	case errors.Is(err, coremanifest.ErrManifestCorrupt):
+		return nil, fmt.Errorf("%s: %w: %v", basePath, ErrNotReady, err)
 	default:
-		return nil, fmt.Errorf("read manifest: %w", err)
+		return nil, fmt.Errorf("read published view: %w", err)
 	}
 
 	sharedMetadata, err := getCachedOrScan(basePath, manifest)

@@ -67,17 +67,17 @@ func (sr *SliceReader) checkBlockBound(blockNum uint32) error {
 	return nil
 }
 
-// RefreshView re-reads the manifest when its inode, mtime or size changed, and reports an epoch change.
+// RefreshView re-reads the published view when its inode, mtime or size changed, and reports an epoch change.
+// A missing or corrupt file leaves the last good view in force.
 func (sr *SliceReader) RefreshView() (epochChanged bool, err error) {
 	sr.viewMu.Lock()
 	defer sr.viewMu.Unlock()
 
-	path := coremanifest.ManifestPath(sr.basePath)
+	path := coremanifest.PublishedPath(sr.basePath)
 	fi, err := os.Stat(path)
 	if errors.Is(err, os.ErrNotExist) {
-		if sr.view.Load() != nil {
-			logger.Printf("warning", "Manifest %s disappeared; reader is not ready until it returns", path)
-			sr.view.Store(nil)
+		if sr.view.Load() == nil && !sr.manifestSeen.Load() && coremanifest.HasManifest(sr.basePath) {
+			sr.manifestSeen.Store(true)
 		}
 		return false, nil
 	}
@@ -89,9 +89,18 @@ func (sr *SliceReader) RefreshView() (epochChanged bool, err error) {
 	if old != nil && old.ino == ino && old.mtime == mtime && old.size == fi.Size() {
 		return false, nil
 	}
-	m, err := coremanifest.ReadManifest(sr.basePath)
+	if r := sr.rejectedView; r.ino == ino && r.mtime == mtime && r.size == fi.Size() {
+		return false, nil
+	}
+	m, err := coremanifest.ReadPublished(sr.basePath)
 	if err != nil {
-		if errors.Is(err, coremanifest.ErrNoManifest) {
+		if errors.Is(err, coremanifest.ErrNoPublished) {
+			return false, nil
+		}
+		if errors.Is(err, coremanifest.ErrManifestCorrupt) {
+			sr.rejectedView = publishedView{ino: ino, mtime: mtime, size: fi.Size()}
+			sr.manifestSeen.Store(true)
+			logger.Printf("warning", "Published view %s is unreadable (%v); keeping the last good view", path, err)
 			return false, nil
 		}
 		return false, err

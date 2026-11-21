@@ -32,6 +32,9 @@ func publishHead(t *testing.T, root string, epoch uint64, head uint32) {
 	if err := coremanifest.WriteManifest(root, m); err != nil {
 		t.Fatal(err)
 	}
+	if err := coremanifest.WritePublished(root, m); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func readable(sr *SliceReader, block uint32) error {
@@ -106,15 +109,61 @@ func TestManifestReaderNotReady(t *testing.T) {
 		t.Fatal("ErrNotReady must be retriable")
 	}
 
-	if err := coremanifest.WriteManifest(root, &coremanifest.Manifest{Epoch: 1}); err != nil {
+	empty := &coremanifest.Manifest{Epoch: 1}
+	if err := coremanifest.WriteManifest(root, empty); err != nil {
+		t.Fatal(err)
+	}
+	if err := coremanifest.WritePublished(root, empty); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := NewSliceReader(root); !errors.Is(err, ErrNotReady) {
-		t.Fatalf("empty manifest: err = %v, want ErrNotReady", err)
+		t.Fatalf("empty published view: err = %v, want ErrNotReady", err)
 	}
 }
 
-func TestManifestMissingAfterSeen(t *testing.T) {
+func TestManifestWithoutPublishedWaits(t *testing.T) {
+	root := copyTestSlices(t)
+	publishHead(t, root, 1, 15000)
+	if err := os.Remove(coremanifest.PublishedPath(root)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewSliceReaderWithOptions(root, QueryReaderOptions()); !errors.Is(err, ErrNotReady) {
+		t.Fatalf("manifest without published view: err = %v, want ErrNotReady", err)
+	}
+	if err := os.WriteFile(coremanifest.PublishedPath(root), []byte("torn"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewSliceReaderWithOptions(root, QueryReaderOptions()); !errors.Is(err, ErrNotReady) {
+		t.Fatalf("corrupt published view: err = %v, want ErrNotReady", err)
+	}
+}
+
+func TestPublishedBoundsBelowManifest(t *testing.T) {
+	root := copyTestSlices(t)
+	publishHead(t, root, 1, 12000)
+	sr, err := NewSliceReaderWithOptions(root, QueryReaderOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sr.Close()
+	ahead := *sr.Manifest()
+	ahead.Head = 15000
+	time.Sleep(2 * time.Millisecond)
+	if err := coremanifest.WriteManifest(root, &ahead); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sr.RefreshView(); err != nil {
+		t.Fatal(err)
+	}
+	if got := sr.Manifest().Head; got != 12000 {
+		t.Fatalf("head = %d, want 12000 from the published view", got)
+	}
+	if err := readable(sr, 12001); !errors.Is(err, ErrBeyondHead) {
+		t.Fatalf("block 12001: err = %v, want ErrBeyondHead", err)
+	}
+}
+
+func TestPublishedMissingOrCorruptKeepsView(t *testing.T) {
 	root := copyTestSlices(t)
 	publishHead(t, root, 1, 15000)
 	sr, err := NewSliceReaderWithOptions(root, QueryReaderOptions())
@@ -122,11 +171,22 @@ func TestManifestMissingAfterSeen(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer sr.Close()
-	if err := os.Remove(coremanifest.ManifestPath(root)); err != nil {
+	if err := os.Remove(coremanifest.PublishedPath(root)); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := sr.GetStateProps(true); !errors.Is(err, ErrNotReady) {
-		t.Fatalf("manifest removed: err = %v, want ErrNotReady", err)
+	if head, _, err := sr.GetStateProps(true); err != nil || head != 15000 {
+		t.Fatalf("published view removed: head %d, err %v; want the last good view at 15000", head, err)
+	}
+	time.Sleep(2 * time.Millisecond)
+	if err := os.WriteFile(coremanifest.PublishedPath(root), make([]byte, coremanifest.ManifestSize), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if head, _, err := sr.GetStateProps(true); err != nil || head != 15000 {
+		t.Fatalf("published view corrupt: head %d, err %v; want the last good view at 15000", head, err)
+	}
+	publishHead(t, root, 1, 16000)
+	if head, _, err := sr.GetStateProps(true); err != nil || head != 16000 {
+		t.Fatalf("published view repaired: head %d, err %v; want 16000", head, err)
 	}
 }
 

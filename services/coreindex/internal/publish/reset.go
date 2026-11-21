@@ -17,6 +17,7 @@ const (
 	ResetManifestWritten ResetStep = iota + 1
 	ResetSlicesRemoved
 	ResetABIIndexReplaced
+	ResetPublishedWritten
 )
 
 type ResetResult struct {
@@ -91,6 +92,12 @@ func (p *Publisher) ResetAfter(n uint32, hook func(ResetStep) error) (*ResetResu
 		res.ABIEntriesCut = m.ABIIndexLen - abiLen
 	}
 	if err := step(ResetManifestWritten); err != nil {
+		return res, err
+	}
+	if err := p.publishView(); err != nil {
+		return res, err
+	}
+	if err := step(ResetPublishedWritten); err != nil {
 		return res, err
 	}
 	m = *p.manifest

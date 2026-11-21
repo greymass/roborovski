@@ -1,6 +1,7 @@
 package coremanifest
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"os/exec"
@@ -64,6 +65,33 @@ func TestWriteAndReadManifest(t *testing.T) {
 	entries, _ := os.ReadDir(filepath.Join(root, ControlDirName))
 	if len(entries) != 1 {
 		t.Fatalf("control directory holds %d files, want only the manifest", len(entries))
+	}
+}
+
+func TestWriteAndReadPublished(t *testing.T) {
+	root := t.TempDir()
+	if _, err := ReadPublished(root); !errors.Is(err, ErrNoPublished) {
+		t.Fatalf("got %v, want ErrNoPublished", err)
+	}
+	m := sampleManifest()
+	if err := WriteManifest(root, m); err != nil {
+		t.Fatal(err)
+	}
+	if err := WritePublished(root, m); err != nil {
+		t.Fatal(err)
+	}
+	a, _ := os.ReadFile(ManifestPath(root))
+	b, _ := os.ReadFile(PublishedPath(root))
+	if !bytes.Equal(a, b) {
+		t.Fatal("published view is not a byte copy of the manifest")
+	}
+	got, err := ReadPublished(root)
+	if err != nil || *got != *m {
+		t.Fatalf("got %+v, %v", got, err)
+	}
+	entries, _ := os.ReadDir(filepath.Join(root, ControlDirName))
+	if len(entries) != 2 {
+		t.Fatalf("control directory holds %d files, want the manifest and the published view", len(entries))
 	}
 }
 

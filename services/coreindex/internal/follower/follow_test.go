@@ -157,6 +157,9 @@ func resetTo(t *testing.T, core, abi string, b uint32) {
 	if err := coremanifest.WriteManifest(core, &m); err != nil {
 		t.Fatal(err)
 	}
+	if err := coremanifest.WritePublished(core, &m); err != nil {
+		t.Fatal(err)
+	}
 	for n := headSlice + 1; ; n++ {
 		if _, err := os.Stat(sliceDir(core, n)); err != nil {
 			break

@@ -69,10 +69,10 @@ func (s *Store) SetHooks(h Hooks) { s.hooks = h }
 
 func (s *Store) State() State { return State(s.state.Load()) }
 
-// Manifest returns the manifest the served view comes from, or nil before one has been seen.
+// Manifest returns the published view being served, or nil before one has been seen.
 func (s *Store) Manifest() *coremanifest.Manifest { return s.manifest.Load() }
 
-// ManifestAge is the time since the served manifest was written.
+// ManifestAge is the time since the served published view was written.
 func (s *Store) ManifestAge() time.Duration {
 	at := s.manifestAt.Load()
 	if at == 0 {
@@ -87,13 +87,13 @@ func (s *Store) currentReader() *corereader.SliceReader {
 	return s.reader
 }
 
-// Poll reads the manifest and moves the served view to it. It is called every 100 ms.
+// Poll reads the published view and moves the served view to it. It is called every 100 ms.
 func (s *Store) Poll() error {
 	r := s.currentReader()
 	if r == nil {
-		if _, err := coremanifest.ReadManifest(s.root); err != nil {
+		if _, err := coremanifest.ReadPublished(s.root); err != nil {
 			s.setState(NotReady)
-			if errors.Is(err, coremanifest.ErrNoManifest) {
+			if errors.Is(err, coremanifest.ErrNoPublished) || errors.Is(err, coremanifest.ErrManifestCorrupt) {
 				return nil
 			}
 			return err
@@ -129,7 +129,7 @@ func (s *Store) Poll() error {
 		}
 		return err
 	}
-	if fi, err := os.Stat(coremanifest.ManifestPath(s.root)); err == nil {
+	if fi, err := os.Stat(coremanifest.PublishedPath(s.root)); err == nil {
 		s.manifestAt.Store(fi.ModTime().UnixNano())
 	}
 	prev := s.manifest.Swap(m)

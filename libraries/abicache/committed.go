@@ -138,8 +138,8 @@ func CommittedBounds(basePath string, head uint32) (dataEnd uint64, indexLen uin
 	return end, uint32(keep), nil
 }
 
-// ManifestLimit reports the ABI entry count committed by the manifest under coreRoot, re-reading it only when it changes.
-// Before any manifest is seen it reports no limit; after one has been seen, a missing manifest limits to zero.
+// ManifestLimit reports the ABI entry count committed by the published view under coreRoot, re-reading it only when it changes.
+// A store with no manifest has no limit; a missing or corrupt published view keeps the last good count, or zero before one.
 func ManifestLimit(coreRoot string) func() (uint32, bool) {
 	var (
 		mu    sync.Mutex
@@ -151,19 +151,19 @@ func ManifestLimit(coreRoot string) func() (uint32, bool) {
 	return func() (uint32, bool) {
 		mu.Lock()
 		defer mu.Unlock()
-		st, err := os.Stat(coremanifest.ManifestPath(coreRoot))
+		st, err := os.Stat(coremanifest.PublishedPath(coreRoot))
 		if err != nil {
-			if seen {
-				return 0, true
+			if seen || coremanifest.HasManifest(coreRoot) {
+				return count, true
 			}
 			return 0, false
 		}
 		if seen && inode(st) == ino && st.ModTime().UnixNano() == mtime {
 			return count, true
 		}
-		m, err := coremanifest.ReadManifest(coreRoot)
+		m, err := coremanifest.ReadPublished(coreRoot)
 		if err != nil {
-			return count, seen
+			return count, true
 		}
 		seen, ino, mtime, count = true, inode(st), st.ModTime().UnixNano(), m.ABIIndexLen
 		return count, true

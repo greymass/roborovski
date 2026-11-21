@@ -211,20 +211,28 @@ func TestCommitOrder(t *testing.T) {
 		if err != nil {
 			return err
 		}
+		pv, err := coremanifest.ReadPublished(core)
+		if err != nil {
+			return err
+		}
 		switch s {
 		case StepABISynced, StepCoreSynced:
-			if m.Head != 90 {
-				t.Errorf("manifest moved to %d before step %d finished", m.Head, s)
+			if m.Head != 90 || pv.Head != 90 {
+				t.Errorf("manifest %d, published %d before step %d finished, want 90", m.Head, pv.Head, s)
 			}
 		case StepManifestWritten:
-			if m.Head != 120 {
-				t.Errorf("manifest head %d after commit, want 120", m.Head)
+			if m.Head != 120 || pv.Head != 90 {
+				t.Errorf("after the manifest: manifest %d, published %d; want 120 and 90", m.Head, pv.Head)
+			}
+		case StepPublishedWritten:
+			if pv.Head != 120 {
+				t.Errorf("published head %d after commit, want 120", pv.Head)
 			}
 		}
 		return nil
 	}
 	e.commit(t)
-	if want := []Step{StepABISynced, StepCoreSynced, StepManifestWritten}; fmt.Sprint(seen) != fmt.Sprint(want) {
+	if want := []Step{StepABISynced, StepCoreSynced, StepManifestWritten, StepPublishedWritten}; fmt.Sprint(seen) != fmt.Sprint(want) {
 		t.Fatalf("steps %v, want %v", seen, want)
 	}
 	e.pub.FaultHook = nil

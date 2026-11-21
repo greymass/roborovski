@@ -88,7 +88,7 @@ func runFollower(cfg *Config, serverConfig *server.Config) {
 	logger.Println("startup", "Follower mode (--read-only):")
 	logger.Printf("startup", "  Core storage: %s (written by another process)", cfg.Path)
 	logger.Printf("startup", "  ABI cache:    %s", abiPath)
-	logger.Printf("startup", "  Manifest:     %s, polled every %v", coremanifest.ManifestPath(cfg.Path), followerPollInterval)
+	logger.Printf("startup", "  Published:    %s, polled every %v", coremanifest.PublishedPath(cfg.Path), followerPollInterval)
 
 	opts := corereader.QueryReaderOptions()
 	opts.DisableStatsReporter = true

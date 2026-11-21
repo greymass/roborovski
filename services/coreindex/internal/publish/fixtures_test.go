@@ -96,7 +96,7 @@ func writeExpect(t *testing.T, dir string, e fixtureExpect) {
 func maskedFile(rel string, b []byte) ([]byte, bool) {
 	out := append([]byte(nil), b...)
 	switch filepath.Base(rel) {
-	case coremanifest.ManifestName:
+	case coremanifest.ManifestName, coremanifest.PublishedName:
 		if len(out) == coremanifest.ManifestSize {
 			clear(out[16:48])
 			clear(out[124:128])
@@ -236,9 +236,21 @@ func TestWriteRecoveryFixtures(t *testing.T) {
 	}
 	emit(t, "store-short-of-manifest", short)
 
+	behind := crashedStore(t, 9990, 9995, 9999)
+	stale, err := coremanifest.ReadManifest(behind)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale.Head -= 3
+	if err := coremanifest.WritePublished(behind, stale); err != nil {
+		t.Fatal(err)
+	}
+	emit(t, "published-behind-manifest", behind)
+
 	pre := crashedStore(t, 9990, 9996, 9999)
 	for _, p := range []string{
 		coremanifest.ManifestPath(pre),
+		coremanifest.PublishedPath(pre),
 		coremanifest.BindingPath(pre),
 		coremanifest.BindingPath(filepath.Join(pre, "abis")),
 	} {

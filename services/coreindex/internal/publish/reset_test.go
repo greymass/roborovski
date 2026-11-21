@@ -151,10 +151,24 @@ func TestResetInterruptedAtEachStep(t *testing.T) {
 	}
 	want := tree(t, core)
 
-	for _, step := range []ResetStep{ResetManifestWritten, ResetSlicesRemoved, ResetABIIndexReplaced} {
+	for _, step := range []ResetStep{ResetManifestWritten, ResetPublishedWritten, ResetSlicesRemoved, ResetABIIndexReplaced} {
 		for _, finish := range []string{"recover", "reset"} {
 			core, abi := cloneStore(t, crashed)
 			_, err := reset(t, core, abi, 200, func(s ResetStep) error {
+				pv, err := coremanifest.ReadPublished(core)
+				if err != nil {
+					t.Fatalf("step %d: published view: %v", s, err)
+				}
+				if s == ResetManifestWritten {
+					if pv.Epoch != 1 {
+						t.Errorf("published view reached epoch %d before the manifest's directory sync", pv.Epoch)
+					}
+				} else if pv.Epoch != 2 || pv.Head != 200 {
+					t.Errorf("step %d: published view at block %d, epoch %d; want 200, 2", s, pv.Head, pv.Epoch)
+				}
+				if _, err := os.Stat(sliceDirOf(core, 2)); s == ResetPublishedWritten && err != nil {
+					t.Errorf("slices above the boundary were removed before readers saw the new epoch")
+				}
 				if s == step {
 					return errKilled
 				}

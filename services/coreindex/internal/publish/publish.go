@@ -28,6 +28,7 @@ const (
 	StepABISynced Step = iota + 1
 	StepCoreSynced
 	StepManifestWritten
+	StepPublishedWritten
 )
 
 type Config struct {
@@ -161,8 +162,22 @@ func (p *Publisher) load() error {
 	return nil
 }
 
-// Prepare adopts a store that has no manifest, and otherwise truncates both roots to the manifest.
+// Prepare adopts a store that has no manifest, and otherwise truncates both roots to the manifest, then publishes the manifest to readers.
 func (p *Publisher) Prepare() error {
+	if err := p.prepare(); err != nil {
+		return err
+	}
+	return p.publishView()
+}
+
+func (p *Publisher) publishView() error {
+	if err := coremanifest.WritePublished(p.cfg.CoreRoot, p.manifest); err != nil {
+		return fmt.Errorf("published view: %w", err)
+	}
+	return nil
+}
+
+func (p *Publisher) prepare() error {
 	if p.adopt {
 		return p.adoptStore()
 	}
@@ -298,6 +313,12 @@ func (p *Publisher) Commit(core CoreStore, abi ABIStore) (bool, error) {
 	if err := p.fault(StepManifestWritten); err != nil {
 		return true, err
 	}
+	if err := p.publishView(); err != nil {
+		return true, fmt.Errorf("commit: %w", err)
+	}
+	if err := p.fault(StepPublishedWritten); err != nil {
+		return true, err
+	}
 	core.MarkPublished(next.Head)
 	return true, nil
 }
@@ -308,7 +329,7 @@ func removeStrayTemps(dir string) {
 		return
 	}
 	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), "."+coremanifest.ManifestName+".tmp-") {
+		if strings.HasPrefix(e.Name(), "."+coremanifest.ManifestName+".tmp-") || strings.HasPrefix(e.Name(), "."+coremanifest.PublishedName+".tmp-") {
 			os.Remove(filepath.Join(dir, e.Name()))
 		}
 	}

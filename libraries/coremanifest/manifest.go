@@ -16,11 +16,13 @@ const (
 	ManifestSize    = 128
 	ControlDirName  = "control"
 	ManifestName    = "manifest"
+	PublishedName   = "published"
 )
 
 var (
 	ErrNoManifest      = errors.New("no manifest")
 	ErrManifestCorrupt = errors.New("manifest corrupt")
+	ErrNoPublished     = errors.New("no published view")
 	castagnoli         = crc32.MakeTable(crc32.Castagnoli)
 )
 
@@ -115,4 +117,30 @@ func WriteManifest(coreRoot string, m *Manifest) error {
 		}
 	}
 	return WriteFileAtomic(ManifestPath(coreRoot), m.MarshalBinary())
+}
+
+// PublishedPath is the copy of the manifest readers follow; writers replace it only after the manifest is durable.
+func PublishedPath(coreRoot string) string {
+	return filepath.Join(coreRoot, ControlDirName, PublishedName)
+}
+
+func ReadPublished(coreRoot string) (*Manifest, error) {
+	b, err := os.ReadFile(PublishedPath(coreRoot))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, ErrNoPublished
+	}
+	if err != nil {
+		return nil, err
+	}
+	return ParseManifest(b)
+}
+
+func HasManifest(coreRoot string) bool {
+	_, err := os.Stat(ManifestPath(coreRoot))
+	return err == nil
+}
+
+// WritePublished replaces the published view with m by rename and no sync, so a power cut can only leave it behind the manifest.
+func WritePublished(coreRoot string, m *Manifest) error {
+	return replaceFile(PublishedPath(coreRoot), m.MarshalBinary())
 }
