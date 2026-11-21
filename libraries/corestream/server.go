@@ -673,3 +673,17 @@ func (s *Server) sendQueryError(client *streamClient, requestID uint64, code uin
 	}
 	WriteMessage(client.conn, MsgTypeQueryError, EncodeQueryErrorMessage(errMsg))
 }
+
+// DisconnectAll closes every client connection; clients reconnect with their saved cursor.
+func (s *Server) DisconnectAll(reason string) int {
+	s.clientsMu.RLock()
+	clients := make([]*streamClient, 0, len(s.clients))
+	for _, c := range s.clients {
+		clients = append(clients, c)
+	}
+	s.clientsMu.RUnlock()
+	for _, c := range clients {
+		s.removeClient(c, reason)
+	}
+	return len(clients)
+}

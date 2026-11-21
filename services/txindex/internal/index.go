@@ -111,6 +111,12 @@ func (idx *TrxIndex) GetMeta() *IndexMeta {
 	return idx.meta
 }
 
+func (idx *TrxIndex) LastIndexedBlock() uint32 {
+	idx.metaMu.RLock()
+	defer idx.metaMu.RUnlock()
+	return idx.meta.LastIndexedBlock
+}
+
 func (idx *TrxIndex) SetLastIndexedBlock(blockNum uint32) {
 	idx.metaMu.Lock()
 	defer idx.metaMu.Unlock()

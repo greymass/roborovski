@@ -430,3 +430,38 @@ func isEmptyStore(basePath string) bool {
 	}
 	return true
 }
+
+// GetBlockBytes returns the decompressed record for blockNum, within the published view.
+func (sr *SliceReader) GetBlockBytes(blockNum uint32) ([]byte, error) {
+	info, err := sr.findSliceForBlock(blockNum)
+	if err != nil {
+		return nil, err
+	}
+	reader, err := sr.getSliceReader(info.SliceNum)
+	if err != nil {
+		return nil, err
+	}
+	defer sr.releaseSliceReader(reader)
+	return reader.readBlockData(blockNum)
+}
+
+// GetBlockByGlob returns the block holding global sequence glob, within the published view.
+func (sr *SliceReader) GetBlockByGlob(glob uint64) (uint32, error) {
+	info, err := sr.findSliceForGlob(glob)
+	if err != nil {
+		return 0, err
+	}
+	reader, err := sr.getSliceReader(info.SliceNum)
+	if err != nil {
+		return 0, err
+	}
+	defer sr.releaseSliceReader(reader)
+	blockNum, err := reader.binarySearchGlob(glob)
+	if err != nil {
+		return 0, err
+	}
+	if err := sr.checkBlockBound(blockNum); err != nil {
+		return 0, err
+	}
+	return blockNum, nil
+}

@@ -22,6 +22,8 @@ import (
 	"github.com/greymass/roborovski/libraries/profiler"
 	"github.com/greymass/roborovski/libraries/server"
 	"github.com/greymass/roborovski/services/actionindex/internal"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -245,6 +247,13 @@ func main() {
 	if cfg.ReadOnly {
 		indexes.SetBulkMode(false)
 	}
+	promauto.NewGaugeFunc(prometheus.GaugeOpts{
+		Name: "actionindex_indexed_head_block",
+		Help: "Last block actionindex has committed to its index.",
+	}, func() float64 {
+		lib, _, _ := indexes.GetProperties()
+		return float64(lib)
+	})
 
 	libNum, _, _ := indexes.GetProperties()
 	startBlock := libNum + 1
@@ -309,6 +318,10 @@ func main() {
 		abiReader, err = abicache.NewReader(cfg.ABISource)
 		if err != nil {
 			logger.Warning("Failed to create ABI reader: %v", err)
+		} else if isLocalDir(cfg.HistorySource) {
+			if err := abiReader.SetLimit(abicache.ManifestLimit(cfg.HistorySource)); err != nil {
+				logger.Warning("Failed to bound ABI reader by the manifest: %v", err)
+			}
 		}
 	}
 
@@ -567,4 +580,12 @@ func handleDebugEndpoint(indexes internal.ActionIndexer, reader corereader.Reade
 	default:
 		http.Error(w, fmt.Sprintf("Unknown debug endpoint: %s", path), http.StatusNotFound)
 	}
+}
+
+func isLocalDir(source string) bool {
+	if strings.Contains(source, "://") {
+		return false
+	}
+	fi, err := os.Stat(source)
+	return err == nil && fi.IsDir()
 }

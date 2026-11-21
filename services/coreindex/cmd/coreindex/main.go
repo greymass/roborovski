@@ -34,6 +34,7 @@ import (
 	"github.com/greymass/roborovski/libraries/server"
 	"github.com/greymass/roborovski/libraries/tracereader"
 	"github.com/greymass/roborovski/services/coreindex/internal/appendlog"
+	"github.com/greymass/roborovski/services/coreindex/internal/follower"
 	"github.com/greymass/roborovski/services/coreindex/internal/publish"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
@@ -537,7 +538,7 @@ func printTimingStats() {
 type BroadcastFunc func(blockNum uint32, data []byte)
 
 // saveSliceCache saves slice metadata cache for fast reader startup
-func saveSliceCache(store *appendlog.SliceStore) error {
+func saveSliceCache(store *appendlog.SliceStore, epoch uint64) error {
 	sliceInfos := store.GetSliceInfos()
 	if len(sliceInfos) == 0 {
 		return nil
@@ -556,7 +557,7 @@ func saveSliceCache(store *appendlog.SliceStore) error {
 			GlobMax:        s.GlobMax,
 		}
 	}
-	return corereader.SaveSlicesToCache(store.GetBasePath(), hrSlices)
+	return corereader.SaveSlicesToCacheEpoch(store.GetBasePath(), hrSlices, epoch)
 }
 
 // isSliceError checks if an error is slice-related and should trigger validation/repair
@@ -1462,6 +1463,13 @@ func handleGetABI(store appendlog.StoreInterface, abiReader *abicache.Reader, w 
 	} else {
 		atBlock = store.GetHead()
 	}
+	if abiReader == nil || store.GetHead() == 0 {
+		http.Error(w, `{"error": "no published view"}`, http.StatusServiceUnavailable)
+		return
+	}
+	if head := store.GetHead(); atBlock > head {
+		atBlock = head
+	}
 
 	abiBytes, err := abiReader.Get(contract, atBlock)
 	if err != nil {
@@ -1487,6 +1495,29 @@ func handleGetInfo(config *server.Config, store appendlog.StoreInterface, w http
 			"misses": cacheMisses,
 			"size":   cacheSize,
 		},
+	}
+
+	if fs, ok := store.(*follower.Store); ok {
+		state := fs.State()
+		response["state"] = state.String()
+		if m := fs.Manifest(); m != nil {
+			response["manifest_age_seconds"] = fs.ManifestAge().Seconds()
+			response["epoch"] = m.Epoch
+			response["committed_head_block_num"] = m.Head
+		}
+		switch state {
+		case follower.NotReady:
+			w.WriteHeader(http.StatusServiceUnavailable)
+			response["error"] = "no published view"
+			delete(response, "head_block_num")
+			delete(response, "last_irreversible_block_num")
+		case follower.Uncertain:
+			w.WriteHeader(http.StatusServiceUnavailable)
+			response["error"] = "published head uncertain: storage extends past the manifest and no writer holds the lock"
+			delete(response, "head_block_num")
+			delete(response, "last_irreversible_block_num")
+			response["history_through_block_num"] = head
+		}
 	}
 
 	responseBytes, err := json.Marshal(response)
@@ -1903,6 +1934,11 @@ func main() {
 		logger.Fatal("%v", err)
 	}
 
+	if cfg.ReadOnly {
+		runFollower(cfg, serverConfig)
+		return
+	}
+
 	// Validate trace cleanup configuration
 	if err := cfg.ValidateTraceCleanup(); err != nil {
 		logger.Fatal("Invalid trace cleanup configuration: %v", err)
@@ -2045,7 +2081,7 @@ func main() {
 	logger.Println("debug-shutdown", "Opened store")
 
 	// Create/update slice metadata cache for fast reader startup
-	if err := saveSliceCache(store); err != nil {
+	if err := saveSliceCache(store, publisher.Manifest().Epoch); err != nil {
 		logger.Printf("warning", "Failed to save slice cache on startup: %v", err)
 	} else if len(store.GetSliceInfos()) > 0 {
 		logger.Printf("startup", "Slice cache saved (%d slices)", len(store.GetSliceInfos()))
@@ -2068,8 +2104,12 @@ func main() {
 	}
 	defer abiReader.Close()
 
+	follower.RecordWriterCommit(committed.Head)
 	commit := func() error {
 		_, err := publisher.Commit(store, abiWriter)
+		if err == nil {
+			follower.RecordWriterCommit(publisher.Manifest().Head)
+		}
 		return err
 	}
 
@@ -2472,7 +2512,7 @@ func main() {
 			}
 			currentCount := len(store.GetSliceInfos())
 			if currentCount > lastSavedSliceCount {
-				if err := saveSliceCache(store); err != nil {
+				if err := saveSliceCache(store, publisher.Manifest().Epoch); err != nil {
 					logger.Printf("warning", "Failed to save slice cache: %v", err)
 				} else {
 					lastSavedSliceCount = currentCount
@@ -2639,7 +2679,7 @@ func main() {
 
 	// Save slice cache on shutdown
 	sliceCount := len(store.GetSliceInfos())
-	if err := saveSliceCache(store); err != nil {
+	if err := saveSliceCache(store, publisher.Manifest().Epoch); err != nil {
 		logger.Printf("warning", "Failed to save slice cache on shutdown: %v", err)
 	} else if sliceCount > 0 {
 		logger.Printf("shutdown", "Slice cache saved (%d slices)", sliceCount)

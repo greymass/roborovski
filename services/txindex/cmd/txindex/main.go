@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -16,6 +17,8 @@ import (
 	"github.com/greymass/roborovski/libraries/profiler"
 	"github.com/greymass/roborovski/libraries/server"
 	"github.com/greymass/roborovski/services/txindex/internal"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -135,6 +138,10 @@ func main() {
 	if err != nil {
 		logger.Fatal("Failed to create transaction index: %v", err)
 	}
+	promauto.NewGaugeFunc(prometheus.GaugeOpts{
+		Name: "txindex_indexed_head_block",
+		Help: "Last block txindex has indexed.",
+	}, func() float64 { return float64(idx.LastIndexedBlock()) })
 	defer idx.Close()
 
 	meta := idx.GetMeta()
@@ -220,6 +227,11 @@ func main() {
 			logger.Printf("startup", "Warning: Failed to open ABI reader: %v (action decoding disabled)", err)
 		} else {
 			defer abiReader.Close()
+			if isLocalDir(cfg.HistorySource) {
+				if err := abiReader.SetLimit(abicache.ManifestLimit(cfg.HistorySource)); err != nil {
+					logger.Printf("startup", "Warning: Failed to bound ABI reader by the manifest: %v", err)
+				}
+			}
 			logger.Printf("startup", "ABI reader initialized from %s", cfg.ABIPath)
 		}
 	}
@@ -271,4 +283,12 @@ func main() {
 		profiler.Stop()
 	}
 	logger.Printf("startup", "Shutdown complete")
+}
+
+func isLocalDir(source string) bool {
+	if strings.Contains(source, "://") {
+		return false
+	}
+	fi, err := os.Stat(source)
+	return err == nil && fi.IsDir()
 }
