@@ -57,6 +57,12 @@ type Config struct {
 	RepairSlice int  `name:"repair-slice" default:"-1" help:"Repair specific slice by rebuilding indexes from data.log"`
 	RepairAll   bool `name:"repair-all" help:"Scan all slices and repair any with invalid indexes"`
 
+	Preflight       bool   `help:"Check storage and the replacement writer's inputs without changing anything, print a JSON report, then exit"`
+	PreflightTarget string `name:"preflight-target" help:"Ingestion method --preflight checks for: 'direct' or 'trace'"`
+	SnapshotInfo    string `name:"snapshot-info" help:"JSON printed by 'spring-util snapshot info' for the snapshot direct ingestion starts from"`
+	Recover         bool   `help:"Take both writer locks, truncate core storage and the ABI cache to the manifest, then exit"`
+	ResetAfterBlock int    `name:"reset-after-block" default:"-1" help:"Remove every slice above block N, the last block of a slice, under a new manifest epoch, then exit"`
+
 	ChainID           string `name:"chain-id" help:"Chain ID (64 hex characters) recorded in the store binding and checked on every start"`
 	ABIPath           string `name:"abi-source" alias:"abi-path" help:"Path to ABI cache (default: {index-storage}/abis/)"`
 	RebuildABIs       bool   `name:"rebuild-abis" help:"Scan slices for eosio::setabi actions and rebuild the ABI cache, then exit"`

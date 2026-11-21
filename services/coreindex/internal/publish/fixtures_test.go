@@ -248,3 +248,51 @@ func TestWriteRecoveryFixtures(t *testing.T) {
 	}
 	emit(t, "adopt-pre-protocol", pre)
 }
+
+var fixturesCheck = flag.String("recovery-fixtures-check", "", "recover each shared fixture in this directory and compare it with after.sha256")
+
+func TestCheckRecoveryFixtures(t *testing.T) {
+	if *fixturesCheck == "" {
+		t.Skip("set -recovery-fixtures-check to recover the shared crashed-store fixtures")
+	}
+	dirs, err := os.ReadDir(*fixturesCheck)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range dirs {
+		if !d.IsDir() {
+			continue
+		}
+		t.Run(d.Name(), func(t *testing.T) {
+			dir := filepath.Join(*fixturesCheck, d.Name())
+			var want fixtureExpect
+			b, err := os.ReadFile(filepath.Join(dir, "expect.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(b, &want); err != nil {
+				t.Fatal(err)
+			}
+			work := filepath.Join(t.TempDir(), "core")
+			copyTree(t, filepath.Join(dir, "before", "core"), work)
+			m, adopted, err := Recover(Config{CoreRoot: work, ABIRoot: filepath.Join(work, "abis"), SliceSpan: fixtureSpan, HeadID: headID})
+			got := fixtureExpect{Outcome: "recovered", Adopted: adopted, Head: m.Head}
+			if err != nil {
+				got = fixtureExpect{Outcome: "refused"}
+			}
+			if got != want {
+				t.Fatalf("recover gave %+v, fixture expects %+v (%v)", got, want, err)
+			}
+			digests := filepath.Join(t.TempDir(), "after.sha256")
+			writeDigests(t, work, digests, got.Adopted)
+			gotDigests, _ := os.ReadFile(digests)
+			wantDigests, err := os.ReadFile(filepath.Join(dir, "after.sha256"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(gotDigests, wantDigests) {
+				t.Fatalf("recovered store differs from after.sha256:\n%s\nwant:\n%s", gotDigests, wantDigests)
+			}
+		})
+	}
+}

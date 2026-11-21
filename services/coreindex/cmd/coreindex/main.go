@@ -1925,6 +1925,10 @@ func main() {
 		Dir:    cfg.TracePath,
 	}
 
+	if runOperatorMode(cfg, traceConfig) {
+		return
+	}
+
 	logger.Println("startup", "coreindex "+Version+" starting...")
 
 	if err := initOpenAPI(); err != nil {

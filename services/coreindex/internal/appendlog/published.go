@@ -456,3 +456,75 @@ func FindAdoptionBoundary(basePath string, span uint32) (Adoption, error) {
 	}
 	return a, nil
 }
+
+// BoundsAt returns the store's bounds cut after block n, reading n's record and checking its CRC.
+func BoundsAt(basePath string, span, n uint32) (Adoption, error) {
+	var a Adoption
+	if n == 0 {
+		return a, nil
+	}
+	dirs, err := listSliceDirs(basePath, span)
+	if err != nil {
+		return a, err
+	}
+	sliceNum := (n - 1) / span
+	var dir string
+	for _, d := range dirs {
+		if d.num == sliceNum {
+			dir = d.path
+		}
+	}
+	if dir == "" {
+		return a, fmt.Errorf("block %d: slice %d is missing", n, sliceNum)
+	}
+	idx, err := LoadBlockIndex(filepath.Join(dir, "blocks.index"))
+	if err != nil {
+		return a, fmt.Errorf("block %d: %w", n, err)
+	}
+	entries := idx.GetAllEntries()
+	if len(entries) == 0 || n < entries[0].BlockNum || int(n-entries[0].BlockNum) >= len(entries) {
+		return a, fmt.Errorf("block %d is not indexed in %s", n, filepath.Base(dir))
+	}
+	i := n - entries[0].BlockNum
+	e := entries[i]
+	if e.BlockNum != n {
+		return a, fmt.Errorf("index entry %d of %s holds block %d, not %d", i, filepath.Base(dir), e.BlockNum, n)
+	}
+	reader, err := NewReaderWithHeader(filepath.Join(dir, "data.log"))
+	if err != nil {
+		return a, fmt.Errorf("open %s: %w", filepath.Base(dir), err)
+	}
+	raw, err := reader.ReadAt(e.Offset)
+	reader.Close()
+	if err != nil {
+		return a, fmt.Errorf("block %d fails its check: %w", n, err)
+	}
+	data, err := decompressData(raw)
+	if err != nil {
+		return a, fmt.Errorf("block %d: %w", n, err)
+	}
+	a.Head = n
+	a.SliceIndexLen = i + 1
+	a.SliceDataEnd = e.Offset + 8 + uint64(e.Size)
+	a.HeadData = data
+	return a, nil
+}
+
+// SliceExtent is the range of slice directories under basePath that match span.
+type SliceExtent struct {
+	Count      int
+	FirstBlock uint32
+	LastSlice  uint32
+}
+
+func ScanSlices(basePath string, span uint32) (SliceExtent, error) {
+	var x SliceExtent
+	dirs, err := listSliceDirs(basePath, span)
+	if err != nil || len(dirs) == 0 {
+		return x, err
+	}
+	x.Count = len(dirs)
+	x.FirstBlock = dirs[0].start
+	x.LastSlice = dirs[len(dirs)-1].num
+	return x, nil
+}
