@@ -1,9 +1,13 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/greymass/roborovski/libraries/logger"
 	"github.com/greymass/roborovski/services/coreverify/internal"
@@ -31,6 +35,10 @@ func main() {
 			fmt.Println(Version)
 			os.Exit(0)
 		}
+	}
+
+	if len(os.Args) > 1 && os.Args[1] == "live-probe" {
+		os.Exit(runLiveProbe(os.Args[2:]))
 	}
 
 	dataPath := flag.String("data-path", "", "Path to coreindex storage (required)")
@@ -122,4 +130,45 @@ func main() {
 		os.Exit(2)
 	}
 	os.Exit(0)
+}
+
+func runLiveProbe(args []string) int {
+	fs := flag.NewFlagSet("live-probe", flag.ExitOnError)
+	cfg := internal.ProbeConfig{}
+	fs.StringVar(&cfg.WriterURL, "writer-url", "http://127.0.0.1:8888", "nodeos HTTP address serving /v1/roborovski_writer/recent")
+	fs.StringVar(&cfg.NodeosURL, "nodeos-url", "", "nodeos HTTP address for get_info (default --writer-url)")
+	fs.StringVar(&cfg.DataPath, "data-path", "", "Core storage to read through corereader (local files path)")
+	fs.StringVar(&cfg.CoreindexURL, "coreindex-url", "", "coreindex HTTP address (HTTP and ABI paths)")
+	fs.StringVar(&cfg.StreamAddress, "stream-address", "", "coreindex corestream address, host:port or a .sock path")
+	fs.StringVar(&cfg.RecordsPath, "records", "", "Write one JSON record per block per path to this file")
+	fs.DurationVar(&cfg.Duration, "duration", 0, "Stop after this long (0 = until interrupted)")
+	fs.DurationVar(&cfg.PollInterval, "poll-interval", 50*time.Millisecond, "Polling interval for the writer ring and the polled paths")
+	fs.DurationVar(&cfg.LateAfter, "late-after", time.Second, "Latency above which a block is late")
+	fs.DurationVar(&cfg.MissingAfter, "missing-after", 60*time.Second, "Time after notification at which an unseen block is missing")
+	fs.DurationVar(&cfg.BehindAfter, "behind-after", 5*time.Second, "nodeos head lag above which a block is counted as behind")
+	fs.DurationVar(&cfg.RestartGrace, "restart-grace", 10*time.Minute, "Window after a restart whose blocks are counted separately")
+	fs.BoolVar(&cfg.OutputJSON, "output-json", false, "Print the report as JSON")
+	fs.Parse(args)
+
+	if cfg.OutputJSON {
+		logger.SetMinLevel(logger.LevelFatal)
+	} else {
+		logger.SetMinLevel(logger.LevelWarning)
+		logger.SetCategoryFilter([]string{"error", "warning"})
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	go func() { <-ctx.Done(); stop() }()
+	probe := internal.NewLiveProbe(cfg)
+	report, err := probe.Run(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Live probe failed: %v\n", err)
+		return 1
+	}
+	probe.PrintReport(report)
+	if report.Status != "passed" {
+		return 2
+	}
+	return 0
 }
