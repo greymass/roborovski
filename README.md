@@ -15,6 +15,10 @@ make test     # Run tests
 make verify   # Full validation
 ```
 
+## Documentation
+
+Operators who run nodeos with `eosio::roborovski_writer_plugin`, or move a store between trace ingestion and direct ingestion, start at [docs/direct-ingestion](docs/direct-ingestion/README.md).
+
 ## License
 
 The services (everything under `services/`, and this repository as a whole) are
