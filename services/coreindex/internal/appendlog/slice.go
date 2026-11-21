@@ -52,6 +52,7 @@ type SliceInfo struct {
 // SliceManager manages multiple storage slices for tiered storage
 type SliceManager struct {
 	basePath       string
+	onRotated      func(firstBlock uint32)
 	blocksPerSlice uint32
 	debug          bool
 
@@ -349,6 +350,9 @@ func (sm *SliceManager) RotateSlice() error {
 		return fmt.Errorf("failed to save initial indices for slice %d: %w", newSliceNum, err)
 	}
 	t4 = time.Now()
+	if sm.onRotated != nil {
+		sm.onRotated(newSliceNum*sm.blocksPerSlice + 1)
+	}
 
 	// Accumulate stats for aggregated logging
 	totalRotate := t4.Sub(t0)

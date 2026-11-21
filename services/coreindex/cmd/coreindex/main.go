@@ -34,6 +34,7 @@ import (
 	"github.com/greymass/roborovski/libraries/server"
 	"github.com/greymass/roborovski/libraries/tracereader"
 	"github.com/greymass/roborovski/services/coreindex/internal/appendlog"
+	"github.com/greymass/roborovski/services/coreindex/internal/fault"
 	"github.com/greymass/roborovski/services/coreindex/internal/follower"
 	"github.com/greymass/roborovski/services/coreindex/internal/publish"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -1925,6 +1926,10 @@ func main() {
 		Dir:    cfg.TracePath,
 	}
 
+	if err := fault.Configure(); err != nil {
+		logger.Fatal("%v", err)
+	}
+
 	if runOperatorMode(cfg, traceConfig) {
 		return
 	}
@@ -2107,6 +2112,8 @@ func main() {
 		logger.Fatal("Failed to open ABI cache reader: %v", err)
 	}
 	defer abiReader.Close()
+
+	armWriterFaults(store, publisher)
 
 	follower.RecordWriterCommit(committed.Head)
 	commit := func() error {

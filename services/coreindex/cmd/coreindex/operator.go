@@ -163,7 +163,8 @@ func runReset(cfg *Config) {
 		logger.Fatal("Cannot take ownership of storage: %v", err)
 	}
 	defer p.Close()
-	res, err := p.ResetAfter(uint32(cfg.ResetAfterBlock), nil)
+	boundary := uint32(cfg.ResetAfterBlock)
+	res, err := p.ResetAfter(boundary, resetFaults(boundary))
 	if err != nil {
 		p.Close()
 		if res != nil {

@@ -770,6 +770,18 @@ func (s *SliceStore) GetLIB() uint32 {
 	return s.lib
 }
 
+// SetRotateHook runs f with the first block of each new active slice once rotation has saved its indices.
+func (s *SliceStore) SetRotateHook(f func(firstBlock uint32)) {
+	s.sliceManager.onRotated = f
+}
+
+// WrittenHead is the last block written, including blocks not yet published.
+func (s *SliceStore) WrittenHead() uint32 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.head
+}
+
 // GetHead returns head block number
 func (s *SliceStore) GetHead() uint32 {
 	s.mu.RLock()
