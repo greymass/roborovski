@@ -95,6 +95,7 @@ type CompareConfig struct {
 	Workers          int
 	BatchSize        int
 	OutputJSON       bool
+	IgnoreElapsed    bool
 }
 
 type ABIEntryInfo struct {
@@ -121,6 +122,8 @@ type CompareReport struct {
 	ABIEntriesCompared int               `json:"abi_entries_compared"`
 	Differences        map[string]int    `json:"differences"`
 	TotalDifferences   int               `json:"total_differences"`
+	IgnoreElapsed      bool              `json:"ignore_elapsed,omitempty"`
+	ElapsedDiffs       int               `json:"elapsed_differences,omitempty"`
 	Cases              map[string]int    `json:"cases"`
 	SnapshotABIEntries []ABIEntryInfo    `json:"snapshot_abi_entries,omitempty"`
 	Issues             []ValidationIssue `json:"issues"`
@@ -164,6 +167,7 @@ func (c *Comparer) Compare() (*CompareReport, error) {
 		Differences:    make(map[string]int),
 		Cases:          make(map[string]int),
 		Issues:         make([]ValidationIssue, 0),
+		IgnoreElapsed:  c.cfg.IgnoreElapsed,
 	}
 	for _, name := range allCases {
 		c.report.Cases[name] = 0
@@ -548,7 +552,9 @@ func (c *Comparer) compareRun(sliceNum uint32, a, b *storeSlice, run []uint32) {
 		if errB != nil {
 			c.diff(DiffFrameError, ValidationIssue{SliceNum: sliceNum, BlockNum: bn, File: "data.log", Message: "compare: " + errB.Error()})
 		}
-		if errA == nil && errB == nil && !bytes.Equal(pa, pb) {
+		if errA == nil && errB == nil && c.cfg.IgnoreElapsed {
+			c.comparePayloadIgnoringElapsed(sliceNum, bn, pa, pb)
+		} else if errA == nil && errB == nil && !bytes.Equal(pa, pb) {
 			c.diff(DiffPayloadMismatch, ValidationIssue{SliceNum: sliceNum, BlockNum: bn, File: "data.log", Message: fmt.Sprintf("decompressed payload differs (store %d bytes, compare %d bytes, first difference at byte %d)", len(pa), len(pb), firstDifference(pa, pb))})
 		}
 	}
@@ -626,6 +632,9 @@ func (c *Comparer) compareBlock(sliceNum uint32, ra, rb *corereader.RawBlock) {
 			c.diff(DiffReadError, ValidationIssue{SliceNum: sliceNum, BlockNum: bn, Message: fmt.Sprintf("GetTransactionData %s: store=%v compare=%v", trxID, errA, errB)})
 			continue
 		}
+		if c.cfg.IgnoreElapsed {
+			ta, tb = withoutElapsed(ta), withoutElapsed(tb)
+		}
 		if !reflect.DeepEqual(ta, tb) {
 			c.diff(DiffTrxDataMismatch, ValidationIssue{SliceNum: sliceNum, BlockNum: bn, Message: fmt.Sprintf("transaction %s differs", trxID)})
 		}
@@ -656,12 +665,52 @@ func (c *Comparer) compareBlock(sliceNum uint32, ra, rb *corereader.RawBlock) {
 	c.addCases(counts)
 }
 
+func withoutElapsed(t *corereader.TransactionData) *corereader.TransactionData {
+	out := *t
+	out.Actions = append([]chain.ActionTrace(nil), t.Actions...)
+	for i := range out.Actions {
+		out.Actions[i].Elapsed = 0
+	}
+	return &out
+}
+
+func (c *Comparer) comparePayloadIgnoringElapsed(sliceNum, bn uint32, pa, pb []byte) {
+	na, ea, errA := corereader.PayloadWithoutElapsed(pa)
+	nb, eb, errB := corereader.PayloadWithoutElapsed(pb)
+	if errA != nil || errB != nil {
+		c.diff(DiffFrameError, ValidationIssue{SliceNum: sliceNum, BlockNum: bn, File: "data.log", Message: fmt.Sprintf("payload parse: store=%v compare=%v", errA, errB)})
+		return
+	}
+	if !bytes.Equal(na, nb) {
+		c.diff(DiffPayloadMismatch, ValidationIssue{SliceNum: sliceNum, BlockNum: bn, File: "data.log", Message: fmt.Sprintf("decompressed payload without elapsed differs (store %d bytes, compare %d bytes, first difference at byte %d)", len(na), len(nb), firstDifference(na, nb))})
+		return
+	}
+	n := 0
+	for i := range ea {
+		if ea[i] != eb[i] {
+			n++
+		}
+	}
+	if n > 0 {
+		c.mu.Lock()
+		c.report.ElapsedDiffs += n
+		c.mu.Unlock()
+	}
+}
+
 func (c *Comparer) compareActions(sliceNum, bn uint32, actsA, actsB []chain.ActionTrace) {
 	if len(actsA) != len(actsB) {
 		c.diff(DiffActionMismatch, ValidationIssue{SliceNum: sliceNum, BlockNum: bn, Message: fmt.Sprintf("action count store=%d compare=%d", len(actsA), len(actsB))})
 		return
 	}
 	for i := range actsA {
+		if c.cfg.IgnoreElapsed {
+			a, b := actsA[i], actsB[i]
+			a.Elapsed, b.Elapsed = 0, 0
+			if reflect.DeepEqual(a, b) {
+				continue
+			}
+		}
 		if !reflect.DeepEqual(actsA[i], actsB[i]) {
 			ja, _ := json.Marshal(actsA[i])
 			jb, _ := json.Marshal(actsB[i])
@@ -967,6 +1016,9 @@ func (c *Comparer) PrintReport(report *CompareReport) {
 	}
 	logger.Printf("summary", "Blocks %d-%d: %d slices, %d blocks, %d transactions, %d actions, %d ABI entries compared",
 		report.StartBlock, report.EndBlock, report.SlicesCompared, report.BlocksCompared, report.TrxCompared, report.ActionsCompared, report.ABIEntriesCompared)
+	if report.IgnoreElapsed {
+		logger.Printf("summary", "Elapsed excluded: %d action records differ only in elapsed", report.ElapsedDiffs)
+	}
 	for _, k := range allCases {
 		logger.Printf("summary", "Case %s: %d", k, report.Cases[k])
 	}

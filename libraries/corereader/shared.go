@@ -1095,3 +1095,50 @@ func catFromBytes(inBytes []byte) *compressedActionTrace {
 	}
 	return &cat
 }
+
+// PayloadWithoutElapsed drops each action record's measured execution time, returning those times in record order.
+func PayloadWithoutElapsed(payload []byte) (normalized []byte, elapsed []int64, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("parse payload: %v", r)
+		}
+	}()
+	buff := bytes.NewReader(payload)
+	reader2Block(buff)
+	catsLen := encoding.GetAsUVarint(buff)
+	if catsLen > 100_000_000 {
+		return nil, nil, fmt.Errorf("action record count %d exceeds limit", catsLen)
+	}
+	for i := uint64(0); i < catsLen; i++ {
+		encoding.GetAsUVarint(buff)
+	}
+	offsetsEnd := len(payload) - buff.Len()
+	lengths := make([]uint64, catsLen)
+	for i := range lengths {
+		lengths[i] = encoding.GetAsUVarint(buff)
+	}
+	out := append([]byte{}, payload[:offsetsEnd]...)
+	elapsed = make([]int64, catsLen)
+	for i, n := range lengths {
+		if n > uint64(buff.Len()) {
+			return nil, nil, fmt.Errorf("action record %d length %d exceeds payload", i, n)
+		}
+		cat := make([]byte, n)
+		buff.Read(cat)
+		r := bytes.NewReader(cat)
+		mask1, _ := r.ReadByte()
+		if mask1&(1<<4) > 0 {
+			r.ReadByte()
+		}
+		head := len(cat) - r.Len()
+		elapsed[i] = encoding.GetAsVarint(r)
+		rest := cat[len(cat)-r.Len():]
+		out = binary.AppendUvarint(out, uint64(head+len(rest)))
+		out = append(out, cat[:head]...)
+		out = append(out, rest...)
+	}
+	if buff.Len() != 0 {
+		return nil, nil, fmt.Errorf("%d trailing bytes after action records", buff.Len())
+	}
+	return out, elapsed, nil
+}

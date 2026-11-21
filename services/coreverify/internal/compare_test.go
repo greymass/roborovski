@@ -324,3 +324,116 @@ func rewriteRecord(t *testing.T, dir string, entryIdx int, payload []byte) {
 		t.Fatal(err)
 	}
 }
+
+func withElapsed(payload []byte, actions int, delta int64) []byte {
+	for blockEnd := 0; blockEnd < len(payload); blockEnd++ {
+		pos := blockEnd
+		n, k := binary.Uvarint(payload[pos:])
+		if k <= 0 || int(n) != actions {
+			continue
+		}
+		pos += k
+		ok := true
+		for i := 0; i < actions && ok; i++ {
+			_, k = binary.Uvarint(payload[pos:])
+			ok = k > 0
+			pos += k
+		}
+		offsetsEnd := pos
+		lengths := make([]int, actions)
+		total := 0
+		for i := 0; i < actions && ok; i++ {
+			v, k := binary.Uvarint(payload[pos:])
+			ok = k > 0
+			pos += k
+			lengths[i] = int(v)
+			total += int(v)
+		}
+		if !ok || len(payload)-pos != total {
+			continue
+		}
+		cats := make([][]byte, actions)
+		for i, l := range lengths {
+			cats[i] = payload[pos : pos+l]
+			pos += l
+		}
+		head := 1
+		if cats[0][0]&(1<<4) > 0 {
+			head = 2
+		}
+		e, k := binary.Varint(cats[0][head:])
+		cats[0] = append(append(append([]byte{}, cats[0][:head]...), binary.AppendVarint(nil, e+delta)...), cats[0][head+k:]...)
+
+		out := append([]byte{}, payload[:offsetsEnd]...)
+		for _, c := range cats {
+			out = binary.AppendUvarint(out, uint64(len(c)))
+		}
+		for _, c := range cats {
+			out = append(out, c...)
+		}
+		return out
+	}
+	return nil
+}
+
+func changeOneElapsed(t *testing.T, storeA, storeB string, delta int64) uint32 {
+	t.Helper()
+	reader, err := corereader.Open(storeA, corereader.DefaultOpenConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+
+	slice := "history_0000000001-0000010000"
+	dirB := filepath.Join(storeB, slice)
+	s, err := openStoreSlice(dirB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.file.Close()
+	idx, err := LoadBlockIndex(filepath.Join(dirB, "blocks.index"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, entry := range idx.GetAllEntries() {
+		raw, err := reader.GetRawBlockBatch(entry.BlockNum, entry.BlockNum)
+		if err != nil || len(raw) != 1 || len(raw[0].Actions) < 2 {
+			continue
+		}
+		payload, err := s.payload(entry)
+		if err != nil {
+			t.Fatal(err)
+		}
+		changed := withElapsed(payload, len(raw[0].Actions), delta)
+		if changed == nil {
+			continue
+		}
+		rewriteRecord(t, dirB, i, changed)
+		return entry.BlockNum
+	}
+	t.Fatal("no block with two or more actions found in fixture")
+	return 0
+}
+
+func TestCompareIgnoresElapsedOnlyWhenAsked(t *testing.T) {
+	for _, delta := range []int64{1, 1 << 20} {
+		f := newFixture(t, baseABIs, baseABIs)
+		changeOneElapsed(t, f.storeA, f.storeB, delta)
+
+		strict := f.compare(t, 1, 10000)
+		if strict.Differences[DiffPayloadMismatch] != 1 || strict.Differences[DiffActionMismatch] != 1 {
+			t.Errorf("delta %d strict: want one payload and one action mismatch, got %v", delta, strict.Differences)
+		}
+
+		loose, err := NewComparer(CompareConfig{
+			StorePath: f.storeA, ComparePath: f.storeB, ABIPath: f.abiA, CompareABIPath: f.abiB,
+			StartBlock: 1, EndBlock: 10000, Workers: 4, BatchSize: 500, OutputJSON: true, IgnoreElapsed: true,
+		}).Compare()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if loose.TotalDifferences != 0 || loose.ElapsedDiffs != 1 {
+			t.Errorf("delta %d ignoring elapsed: want 0 differences and 1 elapsed difference, got %v and %d: %+v", delta, loose.Differences, loose.ElapsedDiffs, loose.Issues)
+		}
+	}
+}

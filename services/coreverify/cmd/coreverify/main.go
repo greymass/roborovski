@@ -54,6 +54,7 @@ func main() {
 	compareABIPath := flag.String("compare-abi-path", "", "ABI cache beside --compare-path (compare mode)")
 	startBlock := flag.Uint("start-block", 0, "First block to compare (0 = first block of --data-path)")
 	endBlock := flag.Uint("end-block", 0, "Last block to compare (0 = last block of --data-path)")
+	ignoreElapsed := flag.Bool("ignore-elapsed", false, "Compare mode: exclude each action's measured execution time, which differs between any two executions of a block")
 	abiSnapshotBlock := flag.Uint("abi-snapshot-block", 0, "Snapshot height whose --compare-abi-path entries are listed for a get_abi check instead of compared")
 	flag.Parse()
 
@@ -99,6 +100,7 @@ func main() {
 			Workers:          *workers,
 			BatchSize:        *batchSize,
 			OutputJSON:       *outputJSON,
+			IgnoreElapsed:    *ignoreElapsed,
 		})
 		report, err := comparer.Compare()
 		if err != nil {
