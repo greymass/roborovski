@@ -4031,6 +4031,10 @@ func parseRawBlock(blockData []byte, blockNum uint32, filterFunc ActionFilterFun
 	}
 }
 
+func ParseRawBlockWithData(blockData []byte, blockNum uint32) RawBlock {
+	return parseRawBlockWithData(blockData, blockNum, nil)
+}
+
 func parseRawBlockWithData(blockData []byte, blockNum uint32, filterFunc ActionFilterFunc) RawBlock {
 	blob := bytesToSyncBlockBlob(blockData)
 

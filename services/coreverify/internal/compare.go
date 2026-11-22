@@ -26,6 +26,7 @@ import (
 const (
 	dataLogHeaderSize = 32
 	maxReportedIssues = 1000
+	maxStaleSamples   = 20
 )
 
 const (
@@ -96,6 +97,7 @@ type CompareConfig struct {
 	BatchSize        int
 	OutputJSON       bool
 	IgnoreElapsed    bool
+	StaleEmptyData   bool
 }
 
 type ABIEntryInfo struct {
@@ -124,6 +126,10 @@ type CompareReport struct {
 	TotalDifferences   int               `json:"total_differences"`
 	IgnoreElapsed      bool              `json:"ignore_elapsed,omitempty"`
 	ElapsedDiffs       int               `json:"elapsed_differences,omitempty"`
+	StaleEmptyData     bool              `json:"stale_empty_data,omitempty"`
+	StaleEmptyActions  map[string]int    `json:"stale_empty_data_actions,omitempty"`
+	StaleEmptyBlocks   int               `json:"stale_empty_data_blocks,omitempty"`
+	StaleEmptySamples  []uint32          `json:"stale_empty_data_samples,omitempty"`
 	Cases              map[string]int    `json:"cases"`
 	SnapshotABIEntries []ABIEntryInfo    `json:"snapshot_abi_entries,omitempty"`
 	Issues             []ValidationIssue `json:"issues"`
@@ -168,6 +174,10 @@ func (c *Comparer) Compare() (*CompareReport, error) {
 		Cases:          make(map[string]int),
 		Issues:         make([]ValidationIssue, 0),
 		IgnoreElapsed:  c.cfg.IgnoreElapsed,
+		StaleEmptyData: c.cfg.StaleEmptyData,
+	}
+	if c.cfg.StaleEmptyData {
+		c.report.StaleEmptyActions = make(map[string]int)
 	}
 	for _, name := range allCases {
 		c.report.Cases[name] = 0
@@ -543,21 +553,24 @@ func splitRuns(blocks []uint32, batch int) [][]uint32 {
 }
 
 func (c *Comparer) compareRun(sliceNum uint32, a, b *storeSlice, run []uint32) {
-	for _, bn := range run {
-		pa, errA := a.payload(a.entries[bn])
-		pb, errB := b.payload(b.entries[bn])
-		if errA != nil {
-			c.diff(DiffFrameError, ValidationIssue{SliceNum: sliceNum, BlockNum: bn, File: "data.log", Message: "store: " + errA.Error()})
-		}
-		if errB != nil {
-			c.diff(DiffFrameError, ValidationIssue{SliceNum: sliceNum, BlockNum: bn, File: "data.log", Message: "compare: " + errB.Error()})
-		}
-		if errA == nil && errB == nil && c.cfg.IgnoreElapsed {
-			c.comparePayloadIgnoringElapsed(sliceNum, bn, pa, pb)
-		} else if errA == nil && errB == nil && !bytes.Equal(pa, pb) {
-			c.diff(DiffPayloadMismatch, ValidationIssue{SliceNum: sliceNum, BlockNum: bn, File: "data.log", Message: fmt.Sprintf("decompressed payload differs (store %d bytes, compare %d bytes, first difference at byte %d)", len(pa), len(pb), firstDifference(pa, pb))})
-		}
+	type payloadPair struct {
+		a, b       []byte
+		errA, errB error
 	}
+	payloads := make(map[uint32]payloadPair, len(run))
+	for _, bn := range run {
+		var p payloadPair
+		p.a, p.errA = a.payload(a.entries[bn])
+		p.b, p.errB = b.payload(b.entries[bn])
+		payloads[bn] = p
+	}
+	stale := make(map[uint32]bool)
+	defer func() {
+		for _, bn := range run {
+			p := payloads[bn]
+			c.comparePayload(sliceNum, bn, p.a, p.b, p.errA, p.errB, stale[bn])
+		}
+	}()
 
 	first, last := run[0], run[len(run)-1]
 	rawA, errA := c.readerA.GetRawBlockBatch(first, last)
@@ -578,23 +591,83 @@ func (c *Comparer) compareRun(sliceNum uint32, a, b *storeSlice, run []uint32) {
 			c.diff(DiffReadError, ValidationIssue{SliceNum: sliceNum, BlockNum: ra.BlockNum, Message: "block not returned by the compare store"})
 			continue
 		}
-		c.compareBlock(sliceNum, ra, rb)
+		p := payloads[ra.BlockNum]
+		if c.compareBlock(sliceNum, ra, rb, p.a, p.b) {
+			stale[ra.BlockNum] = true
+		}
 	}
 	c.mu.Lock()
 	c.report.BlocksCompared += len(rawA)
 	c.mu.Unlock()
 }
 
-func (c *Comparer) compareBlock(sliceNum uint32, ra, rb *corereader.RawBlock) {
+func (c *Comparer) comparePayload(sliceNum, bn uint32, pa, pb []byte, errA, errB error, stale bool) {
+	if errA != nil {
+		c.diff(DiffFrameError, ValidationIssue{SliceNum: sliceNum, BlockNum: bn, File: "data.log", Message: "store: " + errA.Error()})
+	}
+	if errB != nil {
+		c.diff(DiffFrameError, ValidationIssue{SliceNum: sliceNum, BlockNum: bn, File: "data.log", Message: "compare: " + errB.Error()})
+	}
+	switch {
+	case errA != nil || errB != nil:
+	case stale:
+		c.mu.Lock()
+		c.report.StaleEmptyBlocks++
+		if len(c.report.StaleEmptySamples) < maxStaleSamples {
+			c.report.StaleEmptySamples = append(c.report.StaleEmptySamples, bn)
+		}
+		c.mu.Unlock()
+	case c.cfg.IgnoreElapsed:
+		c.comparePayloadIgnoringElapsed(sliceNum, bn, pa, pb)
+	case !bytes.Equal(pa, pb):
+		c.diff(DiffPayloadMismatch, ValidationIssue{SliceNum: sliceNum, BlockNum: bn, File: "data.log", Message: fmt.Sprintf("decompressed payload differs (store %d bytes, compare %d bytes, first difference at byte %d)", len(pa), len(pb), firstDifference(pa, pb))})
+	}
+}
+
+func (c *Comparer) staleEmptyData(sliceNum uint32, ra, rb *corereader.RawBlock, pa, pb []byte) (actsA, actsB []corereader.CanonicalAction, stale bool) {
+	actsA, actsB = ra.Actions, rb.Actions
+	if !c.cfg.StaleEmptyData || len(actsA) != len(actsB) {
+		return actsA, actsB, false
+	}
+	if !ra.HasActionData() && pa != nil {
+		d := corereader.ParseRawBlockWithData(pa, ra.BlockNum)
+		ra = &d
+	}
+	if !rb.HasActionData() && pb != nil {
+		d := corereader.ParseRawBlockWithData(pb, rb.BlockNum)
+		rb = &d
+	}
+	if !ra.HasActionData() || !rb.HasActionData() {
+		c.diff(DiffReadError, ValidationIssue{SliceNum: sliceNum, BlockNum: ra.BlockNum, Message: "raw block has no action data"})
+		return actsA, actsB, false
+	}
+	actsA = append([]corereader.CanonicalAction(nil), actsA...)
+	actsB = append([]corereader.CanonicalAction(nil), actsB...)
+	for i := range actsA {
+		da, db := ra.GetActionData(actsA[i].DataIndex), rb.GetActionData(actsB[i].DataIndex)
+		actsA[i].DataIndex, actsB[i].DataIndex = 0, 0
+		switch {
+		case bytes.Equal(da, db):
+		case len(db) == 0:
+			stale = true
+		default:
+			c.diff(DiffBlockMismatch, ValidationIssue{SliceNum: sliceNum, BlockNum: ra.BlockNum, Message: fmt.Sprintf("action %d data differs: store %d bytes, compare %d bytes", i, len(da), len(db))})
+		}
+	}
+	return actsA, actsB, stale
+}
+
+func (c *Comparer) compareBlock(sliceNum uint32, ra, rb *corereader.RawBlock, pa, pb []byte) bool {
 	bn := ra.BlockNum
 	counts := map[string]int{CaseBlocks: 1}
+	actsA, actsB, stale := c.staleEmptyData(sliceNum, ra, rb, pa, pb)
 
 	for _, f := range []struct {
 		name string
 		a, b any
 	}{
 		{"block_time", ra.BlockTime, rb.BlockTime},
-		{"actions", ra.Actions, rb.Actions},
+		{"actions", actsA, actsB},
 		{"action_meta", ra.ActionMeta, rb.ActionMeta},
 		{"notifications", ra.Notifications, rb.Notifications},
 		{"names_in_block", ra.NamesInBlock, rb.NamesInBlock},
@@ -635,6 +708,9 @@ func (c *Comparer) compareBlock(sliceNum uint32, ra, rb *corereader.RawBlock) {
 		if c.cfg.IgnoreElapsed {
 			ta, tb = withoutElapsed(ta), withoutElapsed(tb)
 		}
+		if c.cfg.StaleEmptyData {
+			ta = withoutStaleData(ta, tb)
+		}
 		if !reflect.DeepEqual(ta, tb) {
 			c.diff(DiffTrxDataMismatch, ValidationIssue{SliceNum: sliceNum, BlockNum: bn, Message: fmt.Sprintf("transaction %s differs", trxID)})
 		}
@@ -663,6 +739,22 @@ func (c *Comparer) compareBlock(sliceNum uint32, ra, rb *corereader.RawBlock) {
 	c.report.ActionsCompared += len(seqs)
 	c.mu.Unlock()
 	c.addCases(counts)
+	return stale
+}
+
+func withoutStaleData(a, b *corereader.TransactionData) *corereader.TransactionData {
+	if len(a.Actions) != len(b.Actions) {
+		return a
+	}
+	out := *a
+	out.Actions = append([]chain.ActionTrace(nil), a.Actions...)
+	for i := range out.Actions {
+		if b.Actions[i].Act.Data == "" && out.Actions[i].Act.Data != "" {
+			out.Actions[i].Act.Data = ""
+			out.Actions[i].Receipt.ActDigest = b.Actions[i].Receipt.ActDigest
+		}
+	}
+	return &out
 }
 
 func withoutElapsed(t *corereader.TransactionData) *corereader.TransactionData {
@@ -704,10 +796,21 @@ func (c *Comparer) compareActions(sliceNum, bn uint32, actsA, actsB []chain.Acti
 		return
 	}
 	for i := range actsA {
-		if c.cfg.IgnoreElapsed {
+		if c.cfg.IgnoreElapsed || c.cfg.StaleEmptyData {
 			a, b := actsA[i], actsB[i]
-			a.Elapsed, b.Elapsed = 0, 0
+			if c.cfg.IgnoreElapsed {
+				a.Elapsed, b.Elapsed = 0, 0
+			}
+			isStale := c.cfg.StaleEmptyData && b.Act.Data == "" && a.Act.Data != ""
+			if isStale {
+				a.Act.Data, a.Receipt.ActDigest = "", b.Receipt.ActDigest
+			}
 			if reflect.DeepEqual(a, b) {
+				if isStale {
+					c.mu.Lock()
+					c.report.StaleEmptyActions[a.Act.Account+"::"+a.Act.Name]++
+					c.mu.Unlock()
+				}
 				continue
 			}
 		}
@@ -1018,6 +1121,9 @@ func (c *Comparer) PrintReport(report *CompareReport) {
 		report.StartBlock, report.EndBlock, report.SlicesCompared, report.BlocksCompared, report.TrxCompared, report.ActionsCompared, report.ABIEntriesCompared)
 	if report.IgnoreElapsed {
 		logger.Printf("summary", "Elapsed excluded: %d action records differ only in elapsed", report.ElapsedDiffs)
+	}
+	if report.StaleEmptyData {
+		logger.Printf("summary", "Stale empty data accepted: %d blocks, actions by name %v", report.StaleEmptyBlocks, report.StaleEmptyActions)
 	}
 	for _, k := range allCases {
 		logger.Printf("summary", "Case %s: %d", k, report.Cases[k])

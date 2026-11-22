@@ -55,6 +55,7 @@ func main() {
 	startBlock := flag.Uint("start-block", 0, "First block to compare (0 = first block of --data-path)")
 	endBlock := flag.Uint("end-block", 0, "Last block to compare (0 = last block of --data-path)")
 	ignoreElapsed := flag.Bool("ignore-elapsed", false, "Compare mode: exclude each action's measured execution time, which differs between any two executions of a block")
+	staleEmptyData := flag.Bool("stale-empty-data", false, "Compare mode: accept an action whose --data-path data is stale where the compare store's is empty, as trace ingestion's decoder wrote it, and count it separately")
 	abiSnapshotBlock := flag.Uint("abi-snapshot-block", 0, "Snapshot height whose --compare-abi-path entries are listed for a get_abi check instead of compared")
 	flag.Parse()
 
@@ -101,6 +102,7 @@ func main() {
 			BatchSize:        *batchSize,
 			OutputJSON:       *outputJSON,
 			IgnoreElapsed:    *ignoreElapsed,
+			StaleEmptyData:   *staleEmptyData,
 		})
 		report, err := comparer.Compare()
 		if err != nil {
