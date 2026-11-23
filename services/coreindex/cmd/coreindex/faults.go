@@ -16,6 +16,8 @@ func armWriterFaults(store *appendlog.SliceStore, publisher *publish.Publisher) 
 			fault.Point("core_synced", store.WrittenHead())
 		case publish.StepManifestWritten:
 			fault.Point("manifest_dir_synced", publisher.Manifest().Head)
+		case publish.StepPublishedWritten:
+			fault.Point("published_renamed", publisher.Manifest().Head)
 		}
 		return nil
 	}
@@ -26,6 +28,8 @@ func resetFaults(boundary uint32) func(publish.ResetStep) error {
 		switch step {
 		case publish.ResetManifestWritten:
 			fault.Point("reset_manifest_written", boundary)
+		case publish.ResetPublishedWritten:
+			fault.Point("reset_published_written", boundary)
 		case publish.ResetSlicesRemoved:
 			fault.Point("reset_slices_removed", boundary)
 		case publish.ResetABIIndexReplaced:

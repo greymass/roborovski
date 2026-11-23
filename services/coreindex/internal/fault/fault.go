@@ -15,8 +15,8 @@ import (
 const EnvVar = "ROBOROVSKI_WRITER_FAULT"
 
 var Points = []string{
-	"abi_synced", "core_synced", "manifest_dir_synced", "slice_rotated",
-	"reset_manifest_written", "reset_slices_removed", "reset_abi_index_replaced",
+	"abi_synced", "core_synced", "manifest_dir_synced", "published_renamed", "slice_rotated",
+	"reset_manifest_written", "reset_published_written", "reset_slices_removed", "reset_abi_index_replaced",
 }
 
 type Spec struct {

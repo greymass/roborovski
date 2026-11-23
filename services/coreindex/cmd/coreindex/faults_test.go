@@ -119,28 +119,36 @@ func runHelper(t *testing.T, core, abi string, target int, faultSpec string) hel
 
 type committedView struct {
 	manifest coremanifest.Manifest
+	served   uint32
 	blocks   map[uint32][]byte
 	abiData  []byte
 	abiIndex []byte
 }
 
-// readCommitted reads, through corereader, every block the manifest commits, plus the committed ABI prefix.
+// readCommitted reads, through corereader, every block control/published exposes, plus the committed ABI prefix.
 func readCommitted(t *testing.T, r *corereader.SliceReader, core, abi string) committedView {
 	t.Helper()
 	m, err := coremanifest.ReadManifest(core)
 	if err != nil {
 		t.Fatal(err)
 	}
-	v := committedView{manifest: *m, blocks: map[uint32][]byte{}}
-	for n := uint32(helperFirst); n <= m.Head; n++ {
+	pub, err := coremanifest.ReadPublished(core)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pub.Head > m.Head {
+		t.Fatalf("published head %d is past the committed head %d", pub.Head, m.Head)
+	}
+	v := committedView{manifest: *m, served: pub.Head, blocks: map[uint32][]byte{}}
+	for n := uint32(helperFirst); n <= pub.Head; n++ {
 		b, err := r.GetBlockBytes(n)
 		if err != nil {
 			t.Fatalf("committed block %d: %v", n, err)
 		}
 		v.blocks[n] = append([]byte(nil), b...)
 	}
-	if _, err := r.GetBlockBytes(m.Head + 1); err == nil {
-		t.Fatalf("reader served block %d above the committed head %d", m.Head+1, m.Head)
+	if _, err := r.GetBlockBytes(pub.Head + 1); err == nil {
+		t.Fatalf("reader served block %d above the published head %d", pub.Head+1, pub.Head)
 	}
 	data, _ := os.ReadFile(filepath.Join(abi, "abis.dat"))
 	index, _ := os.ReadFile(filepath.Join(abi, "abis.index"))
@@ -161,6 +169,7 @@ func TestWriterCrashAtEachFaultPoint(t *testing.T) {
 		{"abi_synced", 9800},
 		{"core_synced", 9800},
 		{"manifest_dir_synced", 9800},
+		{"published_renamed", 9800},
 		{"slice_rotated", 9800},
 	} {
 		t.Run(tc.point, func(t *testing.T) {
@@ -191,7 +200,7 @@ func TestWriterCrashAtEachFaultPoint(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				last := before.manifest.Head
+				last := before.served
 				for !stop.Load() {
 					head, _, err := r.GetStateProps(true)
 					if err == nil {
@@ -220,11 +229,11 @@ func TestWriterCrashAtEachFaultPoint(t *testing.T) {
 			}
 			defer fresh.Close()
 			after := readCommitted(t, fresh, core, abi)
-			if after.manifest.Head != target {
-				t.Fatalf("restart stopped at %d, want %d", after.manifest.Head, target)
+			if after.manifest.Head != target || after.served != target {
+				t.Fatalf("restart stopped at committed %d, published %d, want %d", after.manifest.Head, after.served, target)
 			}
 			for n := uint32(helperFirst); n <= target; n++ {
-				if n <= before.manifest.Head && !bytes.Equal(after.blocks[n], before.blocks[n]) {
+				if n <= before.served && !bytes.Equal(after.blocks[n], before.blocks[n]) {
 					t.Fatalf("committed block %d changed across the crash", n)
 				}
 				if !bytes.Equal(after.blocks[n], testBlock(n)) {
@@ -355,7 +364,7 @@ func TestResetKilledAtEachStep(t *testing.T) {
 		t.Fatalf("uninterrupted reset left head %d epoch %d", m.Head, m.Epoch)
 	}
 
-	for _, point := range []string{"reset_manifest_written", "reset_slices_removed", "reset_abi_index_replaced"} {
+	for _, point := range []string{"reset_manifest_written", "reset_published_written", "reset_slices_removed", "reset_abi_index_replaced"} {
 		for _, finish := range []string{"--recover", "--reset-after-block"} {
 			t.Run(point+"/"+strings.TrimPrefix(finish, "--"), func(t *testing.T) {
 				core := filepath.Join(t.TempDir(), "core")
@@ -373,7 +382,16 @@ func TestResetKilledAtEachStep(t *testing.T) {
 				if !killed || !strings.Contains(out, "reached "+point) {
 					t.Fatalf("reset was not killed at %s (exit %d): %s", point, code, out)
 				}
-				checkRetained(t, r, boundary, removed, "after the kill")
+				if point == "reset_manifest_written" {
+					if h, _, err := r.GetStateProps(true); err != nil || h != head {
+						t.Fatalf("after the kill: reader head %d (%v), want the unreset %d", h, err, head)
+					}
+					if b, err := r.GetBlockBytes(removed); err != nil || !bytes.Equal(b, testBlock(removed)) {
+						t.Fatalf("after the kill: block %d left the unreset view (%v)", removed, err)
+					}
+				} else {
+					checkRetained(t, r, boundary, removed, "after the kill")
+				}
 
 				extra := []string{finish}
 				if finish == "--reset-after-block" {
