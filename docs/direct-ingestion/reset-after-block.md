@@ -31,6 +31,6 @@ The new epoch's manifest is the durable record of the reset. If the command stop
 
 ## Refusals
 
-The reset changes nothing and exits with `Reset refused; storage is unchanged` when N is above the published head, N does not end a slice, the store has no manifest, or N is below the ABI cache's floor. A store started from a snapshot has its floor at the snapshot's block, and history below it has no source to rebuild from.
+The reset changes nothing and exits with `Reset refused; storage is unchanged` when N is above the committed head, N does not end a slice, the store has no manifest, or N is below the ABI cache's floor. A store started from a snapshot has its floor at the snapshot's block, and history below it has no source to rebuild from.
 
 `--reset-after-block` runs on its own. It refuses to combine with `--read-only`, `--replay`, `--preflight`, `--recover` or the verify, repair and ABI rebuild modes.

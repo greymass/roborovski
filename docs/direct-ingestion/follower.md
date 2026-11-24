@@ -64,7 +64,14 @@ actionindex and txindex expose `actionindex_indexed_head_block` and `txindex_ind
 
 ## Consumers
 
-actionindex and txindex read core storage and the ABI cache directly, or follow corestream (actionindex through `--sync-source`, txindex through a `stream://` history source). Both work unchanged in follower mode once they run the release's binaries, which bound every read by `control/published`. Consumers that use only coreindex's HTTP API or corestream need no upgrade.
+actionindex and txindex read core storage and the ABI cache directly, or follow corestream (actionindex through `--sync-source`, txindex through a `stream://` history source). Both work unchanged in follower mode once they run the release's binaries, which bound every read by `control/published`. Reading files directly, each takes core storage, the ABI cache and its own index directory:
+
+```bash
+actionindex --history-source /data/roborovski/core --abi-source /data/roborovski/core/abis --index-storage /data/roborovski/actionindex
+txindex --history-source /data/roborovski/core --abi-source /data/roborovski/core/abis --index-storage /data/roborovski/txindex
+```
+
+They keep following through a cutover in either direction without a restart. Consumers that use only coreindex's HTTP API or corestream need no upgrade.
 
 During a [repair](repair.md), coreindex's head drops to the retained boundary, blocks above it return not found, and coreindex disconnects stream clients. A client that reconnects with a cursor above the new head is refused until the rebuild passes the cursor, then continues without receiving a block twice. Retained history stays readable throughout. Consumers keep what they indexed above the boundary; repair does not rewind them.
 
