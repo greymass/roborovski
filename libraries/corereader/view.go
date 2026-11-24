@@ -474,3 +474,12 @@ func (sr *SliceReader) GetBlockByGlob(glob uint64) (uint32, error) {
 	}
 	return blockNum, nil
 }
+
+func (sm *SharedSliceMetadata) highestGlob() uint64 {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	if len(sm.slices) == 0 {
+		return 0
+	}
+	return sm.slices[len(sm.slices)-1].GlobMax
+}

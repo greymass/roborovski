@@ -1587,8 +1587,23 @@ func (sr *SliceReader) findSliceForGlobTracked(glob uint64) (*SliceInfo, bool, e
 		close(doneCh)
 	}()
 
+	if lim, ok := sr.headLimit(); ok {
+		if _, err := sr.RefreshView(); err != nil {
+			return nil, true, err
+		}
+		if lim, ok = sr.headLimit(); ok && lim > 0 {
+			sr.discoverSlicesThrough(lim)
+		}
+		if sliceInfo, _ = sr.sharedMetadata.findSliceForGlob(glob); sliceInfo != nil {
+			return sliceInfo, true, nil
+		}
+	}
+
 	sliceInfo, err := sr.findSliceForGlobLegacy(glob)
 	if err != nil {
+		if lim, ok := sr.headLimit(); ok && glob > sr.sharedMetadata.highestGlob() {
+			return nil, true, fmt.Errorf("glob %d: %w %d", glob, ErrBeyondHead, lim)
+		}
 		return nil, true, err
 	}
 
@@ -1666,7 +1681,7 @@ func (sr *SliceReader) findSliceForGlobFromDisk(glob uint64, startSliceNum uint3
 			if glob > cachedMax {
 				slicePath := filepath.Join(sr.basePath, fmt.Sprintf("history_%010d-%010d", slice.StartBlock, slice.MaxBlock))
 				blockIndexPath := filepath.Join(slicePath, "blocks.index")
-				_, freshGlobMin, freshGlobMax, err := findLastBlockInIndex(blockIndexPath)
+				_, freshGlobMin, freshGlobMax, err := sr.boundedLastBlock(slice.SliceNum, blockIndexPath)
 				if err == nil && freshGlobMax > cachedMax {
 					logger.Printf("debug", "Refreshed slice %d glob range: %d-%d → %d-%d",
 						slice.SliceNum, cachedMin, cachedMax, freshGlobMin, freshGlobMax)
@@ -1852,7 +1867,7 @@ func (sr *SliceReader) discoverSliceForGlob(glob uint64, knownSlices []SliceInfo
 	for _, ns := range newSlices {
 		slicePath := filepath.Join(sr.basePath, ns.name)
 		blockIndexPath := filepath.Join(slicePath, "blocks.index")
-		endBlock, globMin, globMax, err := findLastBlockInIndex(blockIndexPath)
+		endBlock, globMin, globMax, err := sr.boundedLastBlock(ns.startBlock/10000, blockIndexPath)
 		if err != nil {
 			logger.Printf("debug-slice", "Failed to read blocks.index for discovered slice %s: %v", ns.name, err)
 			continue
@@ -2097,6 +2112,10 @@ func (sr *SliceReader) loadSliceReaderFromDisk(sliceNum uint32) (*sliceReader, e
 			}
 		}
 		return nil, fmt.Errorf("failed to load slice %d: %w", sliceNum, err)
+	}
+	if lim, ok := sr.headLimit(); ok && len(reader.blockIndex) == 0 {
+		reader.close()
+		return nil, fmt.Errorf("slice %d has no blocks within the published view: %w %d", sliceNum, ErrBeyondHead, lim)
 	}
 
 	logger.Printf("debug", "Slice %d loaded: blockIndex has %d entries",
@@ -2757,11 +2776,6 @@ func (r *sliceReader) readBlockData(blockNum uint32) ([]byte, error) {
 
 func (r *sliceReader) binarySearchGlob(glob uint64) (uint32, error) {
 	r.mu.RLock()
-
-	if len(r.blockIndex) == 0 {
-		r.mu.RUnlock()
-		return 0, fmt.Errorf("glob %d not found in slice %d (empty block index)", glob, r.sliceNum)
-	}
 
 	startBlock := r.header.StartBlock
 	numBlocks := uint32(len(r.blockIndex))
