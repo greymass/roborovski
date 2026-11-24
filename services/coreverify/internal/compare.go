@@ -130,6 +130,8 @@ type CompareReport struct {
 	StaleEmptyActions  map[string]int    `json:"stale_empty_data_actions,omitempty"`
 	StaleEmptyBlocks   int               `json:"stale_empty_data_blocks,omitempty"`
 	StaleEmptySamples  []uint32          `json:"stale_empty_data_samples,omitempty"`
+	StaleLayoutBlocks  int               `json:"stale_data_layout_blocks,omitempty"`
+	OpenTailSlices     int               `json:"open_tail_slices,omitempty"`
 	Cases              map[string]int    `json:"cases"`
 	SnapshotABIEntries []ABIEntryInfo    `json:"snapshot_abi_entries,omitempty"`
 	Issues             []ValidationIssue `json:"issues"`
@@ -464,9 +466,12 @@ func (c *Comparer) compareSlice(p slicePair, start, end uint32) {
 	c.report.SlicesCompared++
 	c.mu.Unlock()
 
+	openTail := false
 	ha, errA := a.header()
 	hb, errB := b.header()
-	if errA != nil || errB != nil || !bytes.Equal(ha, hb) {
+	if errA == nil && errB == nil && !bytes.Equal(ha, hb) && openTailHeader(ha, hb, p.start, end) {
+		openTail = true
+	} else if errA != nil || errB != nil || !bytes.Equal(ha, hb) {
 		c.diff(DiffHeaderMismatch, ValidationIssue{SliceNum: sliceNum, File: "data.log", Message: fmt.Sprintf("header store=%x compare=%x", ha, hb)})
 	}
 
@@ -480,9 +485,17 @@ func (c *Comparer) compareSlice(p slicePair, start, end uint32) {
 		if okB {
 			json.Unmarshal(jb, &ib)
 		}
-		if okA != okB || ia != ib {
+		if okA && okB && ia != ib && openTailInfo(ia, ib, end) {
+			openTail = true
+		} else if okA != okB || ia != ib {
 			c.diff(DiffSlicesJSONMismatch, ValidationIssue{SliceNum: sliceNum, File: "slices.json", Message: fmt.Sprintf("store=%s compare=%s", ja, jb)})
 		}
+	}
+
+	if openTail {
+		c.mu.Lock()
+		c.report.OpenTailSlices++
+		c.mu.Unlock()
 	}
 
 	for _, s := range []struct {
@@ -552,6 +565,26 @@ func splitRuns(blocks []uint32, batch int) [][]uint32 {
 	return out
 }
 
+// openTailHeader accepts a compare slice still open at the range end against the same slice finalized in the store.
+func openTailHeader(ha, hb []byte, start, end uint32) bool {
+	if len(ha) != len(hb) || len(ha) < 21 || ha[20] != 1 || hb[20] != 0 {
+		return false
+	}
+	if !bytes.Equal(ha[:20], hb[:20]) || !bytes.Equal(ha[21:], hb[21:]) {
+		return false
+	}
+	per := binary.LittleEndian.Uint32(ha[8:12])
+	return end >= start && end < start+per-1
+}
+
+func openTailInfo(ia, ib SliceInfo, end uint32) bool {
+	if !ia.Finalized || ib.Finalized || ib.EndBlock < end || ib.EndBlock >= ia.EndBlock || ib.GlobMax >= ia.GlobMax {
+		return false
+	}
+	ib.EndBlock, ib.Finalized, ib.GlobMax = ia.EndBlock, true, ia.GlobMax
+	return ia == ib
+}
+
 func (c *Comparer) compareRun(sliceNum uint32, a, b *storeSlice, run []uint32) {
 	type payloadPair struct {
 		a, b       []byte
@@ -619,9 +652,23 @@ func (c *Comparer) comparePayload(sliceNum, bn uint32, pa, pb []byte, errA, errB
 		c.mu.Unlock()
 	case c.cfg.IgnoreElapsed:
 		c.comparePayloadIgnoringElapsed(sliceNum, bn, pa, pb)
-	case !bytes.Equal(pa, pb):
+	case !bytes.Equal(pa, pb) && !c.layoutOnly(pa, pb, false):
 		c.diff(DiffPayloadMismatch, ValidationIssue{SliceNum: sliceNum, BlockNum: bn, File: "data.log", Message: fmt.Sprintf("decompressed payload differs (store %d bytes, compare %d bytes, first difference at byte %d)", len(pa), len(pb), firstDifference(pa, pb))})
 	}
+}
+
+func (c *Comparer) layoutOnly(pa, pb []byte, ignoreElapsed bool) bool {
+	if !c.cfg.StaleEmptyData {
+		return false
+	}
+	same, err := corereader.PayloadsHaveSameContent(pa, pb, ignoreElapsed)
+	if err != nil || !same {
+		return false
+	}
+	c.mu.Lock()
+	c.report.StaleLayoutBlocks++
+	c.mu.Unlock()
+	return true
 }
 
 func (c *Comparer) staleEmptyData(sliceNum uint32, ra, rb *corereader.RawBlock, pa, pb []byte) (actsA, actsB []corereader.CanonicalAction, stale bool) {
@@ -774,6 +821,9 @@ func (c *Comparer) comparePayloadIgnoringElapsed(sliceNum, bn uint32, pa, pb []b
 		return
 	}
 	if !bytes.Equal(na, nb) {
+		if c.layoutOnly(pa, pb, true) {
+			return
+		}
 		c.diff(DiffPayloadMismatch, ValidationIssue{SliceNum: sliceNum, BlockNum: bn, File: "data.log", Message: fmt.Sprintf("decompressed payload without elapsed differs (store %d bytes, compare %d bytes, first difference at byte %d)", len(na), len(nb), firstDifference(na, nb))})
 		return
 	}
