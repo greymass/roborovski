@@ -24,6 +24,8 @@ func (s *stubBaseReader) GetActionsByGlobalSeqs(seqs []uint64) ([]chain.ActionTr
 	return s.traces, &corereader.FetchTimings{}, nil
 }
 
+func (s *stubBaseReader) GetStateProps(bool) (uint32, uint32, error) { return 0, 0, nil }
+
 func TestProcessBatch_DeliversAuthorizerOnlyAction(t *testing.T) {
 	tracked := chain.StringToName("shipload.gm")
 

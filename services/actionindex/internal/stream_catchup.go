@@ -3,7 +3,9 @@ package internal
 import (
 	"context"
 	"encoding/hex"
+	"fmt"
 	"slices"
+	"time"
 
 	"github.com/greymass/roborovski/libraries/chain"
 	"github.com/greymass/roborovski/libraries/corereader"
@@ -40,6 +42,8 @@ func NewStreamCatchup(
 
 // Run streams index matches in [c.startSeq, c.endSeq], both ends inclusive.
 func (c *StreamCatchup) Run(ctx context.Context, sendAction func(StreamedAction) error) error {
+	c.reader.GetStateProps(true)
+
 	if c.canUseContractActionIndex() {
 		return c.streamWithContractActionIndex(ctx, sendAction)
 	}
@@ -219,10 +223,13 @@ func (c *StreamCatchup) streamMultipleAccounts(ctx context.Context, accounts []u
 
 func (c *StreamCatchup) processBatch(seqs []uint64, account uint64, seqToAccount map[uint64]uint64, sendAction func(StreamedAction) error) (int, error) {
 	actions, _, err := c.reader.GetActionsByGlobalSeqs(seqs)
-	if err != nil {
-		if len(seqs) == 1 {
-			return 0, nil
+	if err != nil && len(seqs) == 1 {
+		actions, err = c.retryFetch(seqs[0], err)
+		if err != nil {
+			return 0, err
 		}
+	}
+	if err != nil {
 		sent := 0
 		for _, seq := range seqs {
 			n, err := c.processBatch([]uint64{seq}, account, seqToAccount, sendAction)
@@ -288,4 +295,22 @@ func (c *StreamCatchup) determineAccounts() []uint64 {
 		accounts = append(accounts, receiver)
 	}
 	return accounts
+}
+
+var catchupFetchRetryDelays = []time.Duration{100 * time.Millisecond, 500 * time.Millisecond, 2 * time.Second}
+
+func (c *StreamCatchup) retryFetch(seq uint64, firstErr error) ([]chain.ActionTrace, error) {
+	err := firstErr
+	for _, d := range catchupFetchRetryDelays {
+		logger.Printf("stream", "Catchup: fetch of seq %d failed (%v); refreshing the view and retrying in %v", seq, err, d)
+		time.Sleep(d)
+		c.reader.GetStateProps(true)
+		actions, _, fetchErr := c.reader.GetActionsByGlobalSeqs([]uint64{seq})
+		if fetchErr == nil {
+			return actions, nil
+		}
+		err = fetchErr
+	}
+	logger.Printf("warning", "Catchup: stopping at seq %d, which could not be fetched: %v", seq, err)
+	return nil, fmt.Errorf("catch-up could not fetch seq %d: %w", seq, err)
 }

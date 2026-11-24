@@ -56,6 +56,8 @@ func newAccountQuery(
 		return nil, false
 	}
 
+	reader.GetStateProps(true)
+
 	req, err := parseAccountRequestWithSuffix(r, suffix)
 	if err != nil {
 		writeAccountActivityError(w, "invalid_request", err.Error(), http.StatusBadRequest)
