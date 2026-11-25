@@ -910,10 +910,12 @@ func countAction(a *chain.ActionTrace, counts map[string]int) {
 	} else if a.CreatorAO != 0 {
 		counts[CaseInlineActions]++
 	}
-	if a.Receiver == "eosio" && a.Act.Account == "eosio" {
+	if a.Act.Account == "eosio" {
 		switch chain.StringToName(a.Act.Name) {
 		case setabiNameUint64:
-			counts[CaseSetabiActions]++
+			if a.Receiver == "eosio" {
+				counts[CaseSetabiActions]++
+			}
 		case onerrorNameUint64:
 			counts[CaseOnerrorActions]++
 		}
